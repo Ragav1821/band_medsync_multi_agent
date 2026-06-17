@@ -978,3 +978,16 @@ body {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .agent-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Band Coordination Animations ────────────────────────────────────────── */
+@keyframes scan-line {
+  0%   { transform: translateX(-100%); opacity: 0; }
+  20%  { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { transform: translateX(200%); opacity: 0; }
+}
+
+@keyframes operational-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px currentColor; }
+  50%       { opacity: 0.45; box-shadow: 0 0 14px currentColor; }
+}
