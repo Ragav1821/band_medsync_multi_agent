@@ -4,6 +4,7 @@ import { dashboardApi, incidentsApi, type Incident } from '../api/client'
 import { RadialBarChart, RadialBar, ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts'
 import { BandRoomPanel } from '../components/band/BandRoomPanel'
 import { CollaborationTimeline } from '../components/band/CollaborationTimeline'
+import { BandMetricsCard } from '../components/band/BandMetricsCard'
 
 function MetricCard({ title, value, sub, type = '' }: { title: string; value: string | number; sub: string; type?: string }) {
   return (
@@ -102,34 +103,9 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: string, id?: stri
         <MetricCard title="Resolved Today" value={metrics?.resolved_incidents ?? '—'} sub="Incidents closed" type="success" />
       </div>
 
-      {/* Band Coordination Status Strip */}
-      <div style={{
-        background: 'linear-gradient(135deg, rgba(0,163,255,0.08), rgba(124,58,237,0.06))',
-        border: '1px solid rgba(0,163,255,0.2)',
-        borderRadius: 'var(--radius-md)',
-        padding: 'var(--spacing-md) var(--spacing-lg)',
-        marginBottom: 'var(--spacing-lg)',
-        display: 'flex', gap: 'var(--spacing-lg)', alignItems: 'center', flexWrap: 'wrap',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ fontSize: '1.3rem' }}>📡</div>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: '0.82rem', color: '#00a3ff', letterSpacing: '0.06em' }}>BAND COORDINATION LAYER</div>
-            <div style={{ fontSize: '0.68rem', color: 'rgba(140,180,220,0.5)' }}>Multi-agent collaboration backbone — all agents coordinate through Band</div>
-          </div>
-        </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {[
-            { label: 'Band Rooms', value: (metrics?.active_incidents ?? 0) + (metrics?.resolved_incidents ?? 0), color: '#00a3ff' },
-            { label: 'Agent Messages', value: metrics?.agent_runs_today ? metrics.agent_runs_today * 9 : '—', color: '#00e5a0' },
-            { label: 'Active Band Room', value: metrics && metrics.active_incidents > 0 ? 'LIVE' : 'IDLE', color: metrics && metrics.active_incidents > 0 ? '#ff3b5c' : '#00e5a0' },
-          ].map(stat => (
-            <div key={stat.label} style={{ textAlign: 'center' }}>
-              <div style={{ fontWeight: 800, fontSize: '1.1rem', color: stat.color, lineHeight: 1 }}>{stat.value}</div>
-              <div style={{ fontSize: '0.6rem', color: 'rgba(140,180,220,0.4)', marginTop: 3 }}>{stat.label}</div>
-            </div>
-          ))}
-        </div>
+      {/* Band Metrics Card — standalone reusable component */}
+      <div style={{ marginBottom: 'var(--spacing-lg)' }}>
+        <BandMetricsCard onNavigate={onNavigate} />
       </div>
 
       <div className="grid-2">
