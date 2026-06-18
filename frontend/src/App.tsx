@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Navbar } from './components/shared/Navbar'
 import { Sidebar } from './components/shared/Sidebar'
 import { Dashboard } from './pages/Dashboard'
@@ -28,7 +28,10 @@ type Page = 'dashboard' | 'incidents' | 'agents' | 'action-plan' | 'simulation' 
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
-  const { incidents, selectIncident } = useStore()
+  const { incidents, selectIncident, restoreAuth } = useStore()
+
+  // P0-2: Restore JWT session from localStorage on app load
+  useEffect(() => { restoreAuth() }, [])
 
   const activeIncidentCount = incidents.filter(i => i.status !== 'resolved').length
 

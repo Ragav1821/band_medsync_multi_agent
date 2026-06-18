@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Incident, ActionPlan, AgentRun, DashboardMetrics, AuditEvent } from '../api/client'
+import { authApi } from '../api/client'
 
 // ── WebSocket Event Types ─────────────────────────────────────────────────
 
@@ -19,6 +20,8 @@ export interface WSAgentEvent {
   plan_id?: string
   approved_by?: string
   timestamp?: string
+  band_chat_id?: string      // populated when Band room is created
+  band_chat_url?: string     // direct link to https://app.band.ai/chats/{band_chat_id}
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────
@@ -51,9 +54,26 @@ const INITIAL_AGENTS: AgentLiveState[] = [
   { name: 'compliance_agent', status: 'idle', progress: 0, flags: [] },
 ]
 
+// ── Auth ──────────────────────────────────────────────────────────────────
+
+export interface AuthUser {
+  username: string
+  name: string
+  role: string
+  display_name: string
+  token: string
+}
+
 // ── Store ─────────────────────────────────────────────────────────────────
 
 interface AppStore {
+  // Auth (P0-2 / P0-3)
+  currentUser: AuthUser | null
+  authLoading: boolean
+  login: (username: string, password: string) => Promise<void>
+  logout: () => void
+  restoreAuth: () => void
+
   // Incidents
   incidents: Incident[]
   selectedIncidentId: string | null
@@ -94,9 +114,54 @@ interface AppStore {
   // WS
   wsConnected: boolean
   setWsConnected: (v: boolean) => void
+
+  // Band room — per incident
+  bandRooms: Record<string, string>   // incident_id → band_chat_id
+  setBandRoom: (incidentId: string, chatId: string) => void
 }
 
 export const useStore = create<AppStore>((set, get) => ({
+  // ── Auth ────────────────────────────────────────────────────────────────
+  currentUser: null,
+  authLoading: false,
+
+  login: async (username: string, password: string) => {
+    set({ authLoading: true })
+    try {
+      const res = await authApi.login(username, password)
+      const user: AuthUser = {
+        username,
+        name: res.data.user_name,
+        role: res.data.role,
+        display_name: res.data.display_name,
+        token: res.data.access_token,
+      }
+      // Persist token so it survives page refresh
+      localStorage.setItem('medsync_token', res.data.access_token)
+      localStorage.setItem('medsync_user', JSON.stringify(user))
+      set({ currentUser: user, authLoading: false })
+    } catch (err: any) {
+      set({ authLoading: false })
+      throw new Error(err?.response?.data?.detail || 'Login failed')
+    }
+  },
+
+  logout: () => {
+    localStorage.removeItem('medsync_token')
+    localStorage.removeItem('medsync_user')
+    set({ currentUser: null })
+  },
+
+  restoreAuth: () => {
+    try {
+      const stored = localStorage.getItem('medsync_user')
+      if (stored) set({ currentUser: JSON.parse(stored) })
+    } catch {
+      // corrupted storage — ignore
+    }
+  },
+
+  // ── Incidents ────────────────────────────────────────────────────────────
   incidents: [],
   selectedIncidentId: null,
   setIncidents: (incidents) => set({ incidents }),
@@ -124,6 +189,19 @@ export const useStore = create<AppStore>((set, get) => ({
 
   handleWSEvent: (event) => {
     const { incident_id, agent_name, event_type } = event
+
+    // ── Band room creation event ──────────────────────────────────────────
+    if (event_type === 'band:room_created' && incident_id && event.band_chat_id) {
+      get().setBandRoom(incident_id, event.band_chat_id)
+      get().addFeedEvent(event)
+      get().addToast({
+        type: 'info',
+        title: '📡 Band Room Active',
+        message: `Coordination room created for incident ${incident_id.slice(0, 6).toUpperCase()}`,
+      })
+      return
+    }
+
     if (!incident_id || !agent_name) {
       // Global events (plan:ready, escalation, etc.)
       if (event_type === 'plan:ready') {
@@ -211,4 +289,9 @@ export const useStore = create<AppStore>((set, get) => ({
 
   wsConnected: false,
   setWsConnected: (v) => set({ wsConnected: v }),
+
+  // Band rooms
+  bandRooms: {},
+  setBandRoom: (incidentId, chatId) =>
+    set((s) => ({ bandRooms: { ...s.bandRooms, [incidentId]: chatId } })),
 }))

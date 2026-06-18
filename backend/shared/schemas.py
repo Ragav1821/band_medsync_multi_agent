@@ -58,8 +58,9 @@ class IncidentCreate(BaseModel):
     available_icu_beds: int = Field(ge=0, default=0)
     total_icu_beds: int = Field(ge=0, default=0)
     blood_bank_units: int = Field(ge=0, default=50)
-    additional_context: Optional[str] = None
-    reported_by: Optional[str] = "system"
+    # P1-3: length limits prevent oversized payloads reaching Gemini prompts
+    additional_context: Optional[str] = Field(None, max_length=500)
+    reported_by: Optional[str] = Field("system", max_length=100)
 
 
 class IncidentResponse(BaseModel):
@@ -174,3 +175,13 @@ class SimulationScenario(BaseModel):
     severity_label: str
     incident_data: IncidentCreate
     tags: List[str]
+
+
+# ── Band Notification Schema (P1-4) ──────────────────────────────────────────
+
+class BandNotificationRequest(BaseModel):
+    """Typed schema for POST /notifications/band — replaces raw dict."""
+    incident_id: str = Field(..., max_length=64, description="UUID of the incident")
+    plan_id: str = Field("", max_length=64)
+    message: str = Field(..., min_length=1, max_length=1000)
+    approved_by: str = Field("system", max_length=100)

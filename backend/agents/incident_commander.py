@@ -14,7 +14,8 @@ from agents.staffing_agent import StaffingAgent
 from agents.resource_agent import ResourceAgent
 from agents.compliance_agent import ComplianceAgent
 from shared.context_store import context_store
-from shared.event_bus import emit_escalation, emit_plan_ready, emit_agent_thinking
+from shared.event_bus import emit_escalation, emit_plan_ready, emit_agent_thinking, emit_band_room_created
+import services.band_service as band_service
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,11 @@ class IncidentCommanderAgent(AgentBase):
         """
         Orchestrates the full multi-agent workflow:
         1. Classify incident
-        2. Run capacity, staffing, resource agents in parallel
-        3. Run compliance agent (depends on specialist outputs)
-        4. Synthesize Final Action Plan
+        2. Create Band Room
+        3. Run capacity, staffing, resource agents in parallel
+        4. Run compliance agent (depends on specialist outputs)
+        5. Synthesize Final Action Plan
+        6. Post lifecycle messages to Band
         """
         findings = []
         flags = []
@@ -62,13 +65,26 @@ class IncidentCommanderAgent(AgentBase):
         await self._emit_thinking("CLASSIFICATION", "Classifying incident severity level...")
         severity_level, severity_label = self._classify_incident(incident_data)
         findings.append(f"Incident classified as: {severity_label}")
-        
+
         # Store severity in shared context
         await context_store.set_incident_state(self.incident_id, {
             "severity_level": severity_level,
             "severity_label": severity_label,
             "incident_data": incident_data,
         })
+
+        # ── BAND: Create coordination room for this incident ──────────────
+        incoming = incident_data.get("incoming_patients", 0)
+        await self._emit_thinking("BAND_ROOM", "Creating Band coordination room for incident...")
+        band_chat_id = await band_service.create_band_room(
+            incident_id=self.incident_id,
+            title=f"{severity_label} | {incoming} pts incoming",
+        )
+        if band_chat_id:
+            logger.info("[Commander] Band room created: %s", band_chat_id)
+            findings.append(f"Band coordination room active: {band_chat_id[:8]}")
+            # ── Push room to frontend over WebSocket ───────────────────────
+            await emit_band_room_created(self.incident_id, band_chat_id)
 
         # Emit escalation if critical
         if severity_level == 3:
@@ -78,6 +94,20 @@ class IncidentCommanderAgent(AgentBase):
                 f"Mass casualty event classified {severity_label}. Activating all emergency protocols."
             )
             flags.append("🚨 LEVEL 3 CRITICAL: Executive notification dispatched (CMO, CEO)")
+
+        # ── BAND: Commander dispatches task to all specialist agents ──────
+        await band_service.post_agent_message(
+            incident_id=self.incident_id,
+            sender_agent="incident_commander",
+            message_type="DISPATCH",
+            content=(
+                f"Incident classified: {severity_label}\n"
+                f"Incoming patients: {incoming}\n"
+                f"ICU occupancy: {incident_data.get('icu_occupancy_pct', 0)}%\n"
+                f"Activating Capacity, Staffing, Resource, and Compliance agents simultaneously."
+            ),
+            mention_agent="capacity_agent",
+        )
 
         # Phase 2: Parallel specialist analysis
         await self._emit_thinking("DISPATCH", "Dispatching all specialist agents simultaneously...")
@@ -93,12 +123,54 @@ class IncidentCommanderAgent(AgentBase):
             resource_agent.run(incident_data),
         )
 
+        # ── BAND: Each specialist reports findings ────────────────────────
+        cap_out  = capacity_result.get("output", {})
+        stf_out  = staffing_result.get("output", {})
+        res_out  = resource_result.get("output", {})
+
+        await asyncio.gather(
+            band_service.post_agent_message(
+                incident_id=self.incident_id,
+                sender_agent="capacity_agent",
+                message_type="REPORT",
+                content=cap_out.get("summary", "Analysis complete."),
+                mention_agent="incident_commander",
+            ),
+            band_service.post_agent_message(
+                incident_id=self.incident_id,
+                sender_agent="staffing_agent",
+                message_type="REPORT",
+                content=stf_out.get("summary", "Analysis complete."),
+                mention_agent="incident_commander",
+            ),
+            band_service.post_agent_message(
+                incident_id=self.incident_id,
+                sender_agent="resource_agent",
+                message_type="REPORT",
+                content=res_out.get("summary", "Analysis complete."),
+                mention_agent="incident_commander",
+            ),
+        )
+
         await self._emit_thinking("COLLECTION", "Collecting and cross-referencing specialist outputs...")
 
         # Phase 3: Compliance validation (runs after specialists, reads their outputs)
         await self._emit_thinking("COMPLIANCE", "Dispatching Compliance Agent for validation...")
         compliance_agent = ComplianceAgent(self.incident_id)
         compliance_result = await compliance_agent.run(incident_data)
+
+        # ── BAND: Compliance reports its findings ─────────────────────────
+        comp_out = compliance_result.get("output", {})
+        await band_service.post_agent_message(
+            incident_id=self.incident_id,
+            sender_agent="compliance_agent",
+            message_type="COMPLIANCE",
+            content=(
+                f"{comp_out.get('summary', 'Review complete.')}\n"
+                f"Status: {comp_out.get('data', {}).get('overall_status', 'UNKNOWN')}"
+            ),
+            mention_agent="incident_commander",
+        )
 
         # Phase 4: Aggregate all outputs
         all_outputs = {
@@ -129,11 +201,27 @@ class IncidentCommanderAgent(AgentBase):
         escalation_items = self._build_escalation(all_outputs, severity_level, conflicts)
 
         action_plan_id = str(uuid.uuid4())
-        
+
         await emit_plan_ready(
             self.incident_id,
             action_plan_id,
             f"Action plan ready: {len(priority_1)} immediate, {len(priority_2)} follow-up, {len(escalation_items)} escalations"
+        )
+
+        # ── BAND: Commander publishes plan ready — awaiting human approval ─
+        await band_service.post_agent_message(
+            incident_id=self.incident_id,
+            sender_agent="incident_commander",
+            message_type="PLAN_READY",
+            content=(
+                f"ACTION PLAN SYNTHESIZED — Awaiting human authorization\n"
+                f"Immediate actions: {len(priority_1)}\n"
+                f"Follow-up actions: {len(priority_2)}\n"
+                f"Escalation items: {len(escalation_items)}\n"
+                f"Compliance: {all_outputs['compliance'].get('data', {}).get('overall_status', 'UNKNOWN')}\n"
+                f"Plan ID: {action_plan_id[:8]}"
+            ),
+            mention_agent="compliance_agent",
         )
 
         # Collect all flags

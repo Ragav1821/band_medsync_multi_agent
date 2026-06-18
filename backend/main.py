@@ -4,6 +4,7 @@ MedSync AI — FastAPI Application Entry Point
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers.api import router
+from routers.auth_router import auth_router
 
 app = FastAPI(
     title="MedSync AI",
@@ -13,22 +14,24 @@ app = FastAPI(
     redoc_url="/api/redoc",
 )
 
-# CORS — allow frontend dev server
+# CORS — P1-2: wildcard removed; only specific approved origins allowed
+# Add your deployed frontend URL here before going to production.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
-        "*"
+        "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
 # Mount all routers under /api/v1
 app.include_router(router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
 
 
 @app.get("/")
@@ -49,3 +52,4 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+

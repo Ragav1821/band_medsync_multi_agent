@@ -27,7 +27,7 @@ function deriveStage(
 }
 
 export function BandRoomPanel() {
-  const { selectedIncidentId, agentStates, feedEvents } = useStore()
+  const { selectedIncidentId, agentStates, feedEvents, bandRooms } = useStore()
   const [tick, setTick]       = useState(0)
   const [msgCount, setMsgCount] = useState(0)
 
@@ -54,9 +54,14 @@ export function BandRoomPanel() {
     setMsgCount(currentFeed.filter(e => e.event_type?.startsWith('agent:')).length)
   }, [currentFeed.length])
 
-  const bandRoomId = selectedIncidentId
-    ? `BR-${selectedIncidentId.slice(0, 6).toUpperCase()}`
-    : 'BR-STANDBY'
+  // Real Band chat_id from store (set when room is created via WS event)
+  const bandChatId = selectedIncidentId ? (bandRooms[selectedIncidentId] ?? null) : null
+  const bandRoomId = bandChatId
+    ? `LIVE-${bandChatId.slice(0, 8).toUpperCase()}`
+    : selectedIncidentId
+      ? `BR-${selectedIncidentId.slice(0, 6).toUpperCase()}`
+      : 'BR-STANDBY'
+  const bandRoomUrl = bandChatId ? `https://app.band.ai/chats/${bandChatId}` : null
 
   const isActive = hasStarted && !hasApproval
   const stage    = deriveStage(completedAgents.length, hasPlan, hasApproval, msgCount)
@@ -100,10 +105,40 @@ export function BandRoomPanel() {
 
       <BandRoomHeader
         roomId={bandRoomId}
-        status={hasApproval ? 'COMPLETE' : isActive ? 'ACTIVE' : 'READY'}
-        statusColor={hasApproval ? '#00e5a0' : isActive ? '#00a3ff' : '#00e5a0'}
-        pulsing={isActive && pulsing}
+        status={hasApproval ? 'COMPLETE' : bandChatId ? 'LIVE' : isActive ? 'ACTIVE' : 'READY'}
+        statusColor={hasApproval ? '#00e5a0' : bandChatId ? '#00ff88' : isActive ? '#00a3ff' : '#00e5a0'}
+        pulsing={(isActive || !!bandChatId) && pulsing}
       />
+
+      {/* ── Band Room Live Link ─────────────────────────────── */}
+      {bandRoomUrl && (
+        <a
+          href={bandRoomUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            marginBottom: 10,
+            padding: '6px 10px',
+            background: 'rgba(0,255,136,0.08)',
+            border: '1px solid rgba(0,255,136,0.3)',
+            borderRadius: 8,
+            color: '#00ff88',
+            fontSize: 11,
+            fontFamily: 'monospace',
+            textDecoration: 'none',
+            cursor: 'pointer',
+          }}
+        >
+          <span style={{ fontSize: 14 }}>📡</span>
+          <span style={{ flex: 1 }}>
+            Band Room: <b>{bandChatId!.slice(0, 8).toUpperCase()}</b>
+          </span>
+          <span style={{ opacity: 0.7 }}>Open in Band ↗</span>
+        </a>
+      )}
 
       {/* ── Key metrics row ───────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>

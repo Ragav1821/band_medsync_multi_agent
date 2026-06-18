@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../store/appStore'
 import { actionPlanApi, type ActionPlan, type ActionItem, type ExecutiveSummary } from '../api/client'
+import { LoginModal } from '../components/shared/LoginModal'
 
 const DEMO_PLAN: ActionPlan = {
   id: 'demo-plan-001',
@@ -40,9 +41,10 @@ const DEMO_PLAN: ActionPlan = {
 }
 
 export function ActionPlanPage({ onNavigate }: { onNavigate: (page: string, id?: string) => void }) {
-  const { selectedIncidentId, actionPlans, setActionPlan, incidents, addToast } = useStore()
+  const { selectedIncidentId, actionPlans, setActionPlan, incidents, addToast, currentUser, logout } = useStore()
   const [approving, setApproving] = useState(false)
   const [expandedSection, setExpandedSection] = useState<string | null>(null)
+  const [showLoginModal, setShowLoginModal] = useState(false)
 
   const plan = selectedIncidentId ? actionPlans[selectedIncidentId] : null
   const displayPlan = plan || DEMO_PLAN
@@ -63,12 +65,26 @@ export function ActionPlanPage({ onNavigate }: { onNavigate: (page: string, id?:
     return () => clearInterval(interval)
   }, [selectedIncidentId, setActionPlan])
 
-  const handleApprove = async () => {
+  const handleApproveClick = () => {
+    // P0-2: Gate approval behind authentication
+    if (!currentUser) {
+      setShowLoginModal(true)
+      return
+    }
+    doApprove()
+  }
+
+  const doApprove = async () => {
     if (!displayPlan.id) return
     setApproving(true)
     try {
-      await actionPlanApi.approve(displayPlan.id, 'Operations Manager (Alex Chen)')
-      addToast({ type: 'success', title: '✅ Plan Approved', message: 'Action plan approved. Notifications dispatched to all departments.' })
+      // P0-3: identity comes from JWT token — no query param passed
+      await actionPlanApi.approve(displayPlan.id)
+      addToast({
+        type: 'success',
+        title: '✅ Plan Approved',
+        message: `Approved by ${currentUser?.display_name}. Notifications dispatched to all departments.`,
+      })
       if (selectedIncidentId) {
         const res = await actionPlanApi.get(selectedIncidentId)
         setActionPlan(selectedIncidentId, res.data)
@@ -89,15 +105,30 @@ export function ActionPlanPage({ onNavigate }: { onNavigate: (page: string, id?:
 
   return (
     <div>
+      {/* P0-2: Login modal — shown when user tries to approve without auth */}
+      {showLoginModal && (
+        <LoginModal
+          onClose={() => setShowLoginModal(false)}
+          onSuccess={() => doApprove()}
+        />
+      )}
+
       <div className="page-header">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
             <h1 className="page-title">📋 Final Action Plan</h1>
             <p className="page-subtitle">AI-generated coordinated response — awaiting authorization</p>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {/* P0-3: Show authenticated user identity */}
+            {currentUser && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 8, background: 'rgba(0,229,160,0.1)', border: '1px solid rgba(0,229,160,0.25)' }}>
+                <span style={{ fontSize: '0.7rem', color: '#00e5a0' }}>🔐 {currentUser.display_name}</span>
+                <button onClick={logout} style={{ background: 'none', border: 'none', color: 'rgba(160,200,240,0.4)', cursor: 'pointer', fontSize: '0.65rem', padding: '0 2px' }}>✕</button>
+              </div>
+            )}
             {displayPlan.status !== 'approved' && (
-              <button className="btn btn-success" onClick={handleApprove} disabled={approving}>
+              <button className="btn btn-success" onClick={handleApproveClick} disabled={approving}>
                 {approving ? '⏳ Approving...' : '✅ Approve & Execute'}
               </button>
             )}

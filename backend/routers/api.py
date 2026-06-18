@@ -2,13 +2,15 @@
 API Routers for Incidents, Agents, Action Plans, Dashboard, Simulation, and WebSocket.
 """
 import asyncio
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
 from typing import List, Optional
-from shared.schemas import IncidentCreate, IncidentResponse, IncidentStatus
+from shared.schemas import IncidentCreate, IncidentResponse, IncidentStatus, BandNotificationRequest
 from shared.event_bus import ws_manager
 from services.data_store import store
 from services.simulation_engine import list_scenarios, get_scenario
 from agents.incident_commander import IncidentCommanderAgent
+from auth.jwt_auth import require_approver
+from config.settings import settings
 
 router = APIRouter()
 
@@ -79,8 +81,20 @@ async def get_action_plan(incident_id: str):
 
 
 @router.patch("/action-plans/{plan_id}/approve", response_model=dict)
-async def approve_action_plan(plan_id: str, approved_by: str = "Operations Manager"):
-    """Approve an action plan (human-in-the-loop)."""
+async def approve_action_plan(
+    plan_id: str,
+    # P0-2: require authenticated user with approver role
+    # P0-3: identity comes from verified JWT token, not a user-supplied string
+    current_user: dict = Depends(require_approver),
+):
+    """
+    Approve an action plan (human-in-the-loop).
+    Requires a valid JWT token with role: OPERATIONS_MANAGER | COMPLIANCE_OFFICER | CHIEF_MEDICAL_OFFICER.
+    Approver identity is sourced from the authenticated token — not from a query parameter.
+    """
+    # Build verified identity string from JWT claims
+    approved_by = current_user.get("display_name", current_user.get("name", current_user["sub"]))
+
     plan = store.approve_action_plan(plan_id, approved_by)
     if not plan:
         raise HTTPException(status_code=404, detail="Action plan not found")
@@ -94,6 +108,7 @@ async def approve_action_plan(plan_id: str, approved_by: str = "Operations Manag
         "incident_id": plan["incident_id"],
         "plan_id": plan_id,
         "approved_by": approved_by,
+        "approver_role": current_user.get("role"),
     })
 
     # Fire Band notification stub for each escalation item
@@ -161,17 +176,17 @@ async def run_simulation(scenario_id: str, background_tasks: BackgroundTasks):
 # ── Band Notifications ─────────────────────────────────────────────────────
 
 @router.post("/notifications/band", response_model=dict, status_code=202)
-async def send_band_notification(body: dict):
+async def send_band_notification(body: BandNotificationRequest):
     """
-    Send an escalation notification to Band (stub).
-    Body: { "incident_id": str, "message": str }
+    Send an escalation notification to Band.
+    P1-4: Accepts a typed BandNotificationRequest schema (was raw dict).
     """
     from services.band_service import send_escalation_to_band
     result = await send_escalation_to_band(
-        incident_id=body.get("incident_id", "unknown"),
-        plan_id=body.get("plan_id", ""),
-        message=body.get("message", ""),
-        approved_by=body.get("approved_by", "system"),
+        incident_id=body.incident_id,
+        plan_id=body.plan_id,
+        message=body.message,
+        approved_by=body.approved_by,
     )
     return result
 
@@ -206,6 +221,7 @@ async def websocket_endpoint(websocket: WebSocket, incident_id: str):
 async def run_agent_workflow(incident_id: str, incident_data: dict):
     """
     Background task that runs the full multi-agent workflow.
+    P1-1: Entire workflow wrapped with asyncio.wait_for using settings.agent_timeout_seconds.
 
     After the IncidentCommanderAgent completes it:
     1. Saves the commander's own run record.
@@ -216,7 +232,12 @@ async def run_agent_workflow(incident_id: str, incident_data: dict):
     """
     try:
         commander = IncidentCommanderAgent(incident_id)
-        result = await commander.run(incident_data)
+
+        # P1-1: Enforce workflow timeout — prevents indefinite hang if Band/Gemini stalls
+        result = await asyncio.wait_for(
+            commander.run(incident_data),
+            timeout=settings.agent_timeout_seconds,
+        )
 
         # ── 1. Save commander run ──────────────────────────────────────────
         store.save_agent_run_result(incident_id, "incident_commander", result)
@@ -256,6 +277,15 @@ async def run_agent_workflow(incident_id: str, incident_data: dict):
         else:
             store.update_incident_status(incident_id, IncidentStatus.ACTIVE)
 
+    except asyncio.TimeoutError:
+        # P1-1: Workflow exceeded agent_timeout_seconds — surface to frontend
+        store.update_incident_status(incident_id, IncidentStatus.ACTIVE)
+        await ws_manager.broadcast_to_incident(incident_id, {
+            "event_type": "agent:error",
+            "incident_id": incident_id,
+            "error": f"Workflow timeout after {settings.agent_timeout_seconds}s. Gemini fallback may be active.",
+        })
+
     except Exception as e:
         store.update_incident_status(incident_id, IncidentStatus.ACTIVE)
         await ws_manager.broadcast_to_incident(incident_id, {
@@ -263,3 +293,7 @@ async def run_agent_workflow(incident_id: str, incident_data: dict):
             "incident_id": incident_id,
             "error": str(e),
         })
+
+
+
+

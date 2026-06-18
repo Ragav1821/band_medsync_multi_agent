@@ -9,6 +9,15 @@ export const api = axios.create({
   timeout: 30000,
 })
 
+// P0-2: Attach JWT Bearer token from localStorage on every request
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('medsync_token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface Incident {
@@ -125,6 +134,16 @@ export interface AuditEvent {
   created_at: string
 }
 
+// P0-2: Auth response type
+export interface LoginResponse {
+  access_token: string
+  token_type: string
+  user_name: string
+  display_name: string
+  role: string
+  expires_in_hours: number
+}
+
 // ── API Methods ──────────────────────────────────────────────────────────────
 
 export const incidentsApi = {
@@ -140,8 +159,8 @@ export const agentsApi = {
 
 export const actionPlanApi = {
   get: (incidentId: string) => api.get<ActionPlan>(`/incidents/${incidentId}/action-plan`),
-  approve: (planId: string, approvedBy: string) =>
-    api.patch(`/action-plans/${planId}/approve`, null, { params: { approved_by: approvedBy } }),
+  // P0-2/P0-3: approved_by comes from JWT — no longer a query param
+  approve: (planId: string) => api.patch(`/action-plans/${planId}/approve`),
 }
 
 export const dashboardApi = {
@@ -157,3 +176,21 @@ export const auditApi = {
   list: (incidentId?: string) =>
     api.get<AuditEvent[]>('/audit-events', { params: incidentId ? { incident_id: incidentId } : {} }),
 }
+
+// P0-2: Auth API
+export const authApi = {
+  login: (username: string, password: string) => {
+    // OAuth2 password flow requires form data
+    const form = new URLSearchParams()
+    form.append('username', username)
+    form.append('password', password)
+    return api.post<LoginResponse>('/auth/token', form, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
+  },
+  me: () => api.get('/auth/me'),
+  demoUsers: () => api.get('/auth/users'),
+}
+
+
+

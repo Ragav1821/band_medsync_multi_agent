@@ -102,3 +102,13 @@ async def emit_escalation(incident_id: str, level: str, message: str):
         "message": message,
         "requires_approval": True,
     })
+
+
+async def emit_band_room_created(incident_id: str, band_chat_id: str):
+    """Notify the frontend that a Band coordination room is live."""
+    await ws_manager.broadcast_to_incident(incident_id, {
+        "event_type": "band:room_created",
+        "incident_id": incident_id,
+        "band_chat_id": band_chat_id,
+        "band_chat_url": f"https://app.band.ai/chats/{band_chat_id}",
+    })
