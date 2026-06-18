@@ -1,5 +1,9 @@
 """
 Staffing Agent — Monitors staff availability, detects shortages, recommends staffing actions.
+Phase 18: Reads capacity_alert from Capacity Agent to refine ICU nurse calculation.
+         Sends staffing_gap to Resource Agent for equipment-nurse coordination.
+Phase 19: Handles REPLAN_REQUEST from Commander — proposes alternative shift coverage
+         and sends REPLAN_RESPONSE back to Compliance.
 """
 import asyncio
 from typing import Dict, List
@@ -15,11 +19,11 @@ class StaffingAgent(AgentBase):
     )
 
     # Safe nurse:patient ratios
-    ICU_RATIO = 1       # 1 nurse per 1-2 ICU patients
-    ED_RATIO = 1        # 1 nurse per 3-4 ED patients
-    GENERAL_RATIO = 1   # 1 nurse per 4-6 general patients
+    ICU_RATIO = 1
+    ED_RATIO = 1
+    GENERAL_RATIO = 1
 
-    async def analyze(self, incident_data: Dict) -> Dict:
+    async def analyze(self, incident_data: Dict, inbox: list = None) -> Dict:
         incoming = incident_data.get("incoming_patients", 0)
         available_nurses = incident_data.get("available_nurses", 0)
         icu_pct = incident_data.get("icu_occupancy_pct", 0.0)
@@ -29,15 +33,57 @@ class StaffingAgent(AgentBase):
         recommendations = []
         flags = []
 
+        # ── Phase 18: Consume Capacity Agent's capacity_alert ─────────────────
+        inbox = inbox or []
+        capacity_msgs = [m for m in inbox if m.message_type == "capacity_alert"]
+
+        # ── Phase 19: Detect REPLAN_REQUEST from Commander ───────────────────
+        replan_msgs  = [m for m in inbox if m.message_type == "replan_request"]
+        replan_mode  = bool(replan_msgs)
+        replan_round = replan_msgs[-1].metadata.get("replan_round", 0) if replan_msgs else 0
+
+        capacity_context = {}
+        if capacity_msgs:
+            latest = capacity_msgs[-1]
+            capacity_context = latest.metadata
+            projected_icu = capacity_context.get("projected_icu_pct", icu_pct)
+            cap_nurse_ask = capacity_context.get("icu_nurses_needed", 0)
+            await self._emit_thinking(
+                "CAPACITY_INPUT",
+                f"Received from Capacity Agent: ICU projected {projected_icu:.1f}%. "
+                f"Capacity requests {cap_nurse_ask} additional ICU nurses — factoring into gap analysis."
+            )
+            findings.append(
+                f"Capacity Agent alert: ICU projected at {projected_icu:.1f}% — "
+                f"cross-agent coordination active."
+            )
+        else:
+            cap_nurse_ask = 0
+
+        if replan_mode:
+            await self._emit_thinking(
+                "REPLAN_MODE",
+                f"[REPLAN ROUND {replan_round}] Commander requests revised staffing plan. "
+                f"Evaluating alternative shift coverage: extended shifts, cross-unit redeployment, "
+                f"float pool activation, and retired nurse emergency recall.",
+            )
+            findings.append(
+                f"[REPLAN {replan_round}] Commander requested staffing revision — "
+                f"applying alternative coverage strategies."
+            )
+
         # Step 1: Calculate required staffing
         await self._emit_thinking("STAFFING_CALC", "Calculating required nurse staffing for surge scenario...")
-        
-        icu_patients = int(total_icu_beds * icu_pct / 100)
+
+        icu_patients    = int(total_icu_beds * icu_pct / 100)
         ed_patients_est = int(incoming * 0.8)
-        
-        required_icu_nurses = max(1, icu_patients // 2)
-        required_ed_nurses = max(1, ed_patients_est // 3)
+
+        required_icu_nurses     = max(1, icu_patients // 2)
+        required_ed_nurses      = max(1, ed_patients_est // 3)
         required_general_nurses = max(1, (incoming - ed_patients_est) // 4)
+
+        # Boost ICU nurses if Capacity Agent requested more
+        required_icu_nurses = max(required_icu_nurses, required_icu_nurses + cap_nurse_ask)
         total_required = required_icu_nurses + required_ed_nurses + required_general_nurses
 
         findings.append(f"Current available nurses: {available_nurses}")
@@ -48,7 +94,7 @@ class StaffingAgent(AgentBase):
 
         # Step 2: Gap analysis
         await self._emit_thinking("GAP_ANALYSIS", f"Detecting staffing gaps: need {total_required}, have {available_nurses}...")
-        
+
         gap = total_required - available_nurses
         if gap > 0:
             findings.append(f"STAFFING GAP: {gap} nurses short")
@@ -58,53 +104,146 @@ class StaffingAgent(AgentBase):
 
         # Step 3: On-call analysis
         await self._emit_thinking("ONCALL_CHECK", "Checking on-call nurse availability pool...")
-        
-        on_call_available = min(gap, 6) if gap > 0 else 0  # Simulated on-call pool
-        agency_available = min(max(0, gap - on_call_available), 8)  # Agency pool
-        still_short = max(0, gap - on_call_available - agency_available)
+
+        on_call_available = min(gap, 6) if gap > 0 else 0
+        agency_available  = min(max(0, gap - on_call_available), 8)
+
+        # Phase 19: In replan mode, unlock additional alternative coverage
+        if replan_mode and gap > 0:
+            # Alternative strategies: float pool, extended shifts, retired nurse recall
+            float_pool_available = min(max(0, gap - on_call_available - agency_available), 4)
+            extended_shift_nurses = min(max(0, gap - on_call_available - agency_available - float_pool_available), 3)
+            still_short = max(0, gap - on_call_available - agency_available - float_pool_available - extended_shift_nurses)
+            if float_pool_available > 0:
+                recommendations.insert(0, f"Activate hospital float pool: {float_pool_available} nurses available immediately")
+            if extended_shift_nurses > 0:
+                recommendations.insert(1, f"Authorise {extended_shift_nurses} voluntary extended 12-hr shifts (current staff)")
+            findings.append(
+                f"[REPLAN {replan_round}] Alternative coverage: float pool ({float_pool_available}) + "
+                f"extended shifts ({extended_shift_nurses}) reduces unresolved gap."
+            )
+        else:
+            float_pool_available = 0
+            extended_shift_nurses = 0
+            still_short = max(0, gap - on_call_available - agency_available)
 
         if on_call_available > 0:
-            recommendations.append(
-                f"Activate {on_call_available} on-call nurses immediately (30-min ETA)"
-            )
+            recommendations.append(f"Activate {on_call_available} on-call nurses immediately (30-min ETA)")
         if agency_available > 0:
-            recommendations.append(
-                f"Request {agency_available} agency nurses from registered staffing pool (60-min ETA)"
-            )
+            recommendations.append(f"Request {agency_available} agency nurses from registered staffing pool (60-min ETA)")
         if still_short > 0:
             recommendations.append(
                 f"Authorize mandatory overtime for {still_short} additional nurses — requires CMO approval"
             )
             flags.append(f"🚨 ESCALATION: {still_short} nurses unresolvable without executive authorization")
+        elif replan_mode and gap > 0:
+            findings.append(f"[REPLAN] Staffing gap FULLY RESOLVED via alternative coverage strategies.")
 
         # Step 4: Shift allocation
         await self._emit_thinking("ALLOCATION", "Calculating optimal nurse allocation by unit...")
-        
-        recommendations.append(
-            f"Allocate {required_icu_nurses} nurses to ICU (priority: ventilated patients)"
-        )
-        recommendations.append(
-            f"Allocate {min(available_nurses, required_ed_nurses)} nurses to ED triage"
-        )
+
+        recommendations.append(f"Allocate {required_icu_nurses} nurses to ICU (priority: ventilated patients)")
+        recommendations.append(f"Allocate {min(available_nurses, required_ed_nurses)} nurses to ED triage")
 
         # Step 5: Ratio compliance check
         await self._emit_thinking("RATIO_CHECK", "Verifying nurse-patient ratios against safe care standards...")
-        
-        effective_ratio = available_nurses / max(1, total_required)
+
+        total_covered = available_nurses + on_call_available + agency_available + float_pool_available + extended_shift_nurses
+        effective_ratio = total_covered / max(1, total_required)
         if effective_ratio < 0.7:
             flags.append("⚠️ WARNING: Nurse:patient ratio below safe thresholds until on-call staff arrives")
-            recommendations.append(
-                "Document temporary ratio exception with medical necessity justification"
+            recommendations.append("Document temporary ratio exception with medical necessity justification")
+
+        confidence_score = 0.90 if replan_mode else 0.88
+
+        # ── Phase 18/19: Send messages to peer agents ─────────────────────────
+        # Message → Resource: ICU beds need equipment support
+        icu_beds_needed = required_icu_nurses
+        msg_type = "replan_response" if replan_mode else "staffing_gap"
+        msg_prefix = f"[REPLAN {replan_round}] REVISED PLAN: " if replan_mode else ""
+
+        await self.send_message(
+            receiver="resource_agent",
+            message_type=msg_type,
+            content=(
+                f"{msg_prefix}Staffing gap of {gap} nurses. "
+                f"Activating {on_call_available} on-call + {agency_available} agency"
+                f"{f' + {float_pool_available} float pool + {extended_shift_nurses} extended shifts' if replan_mode else ''} nurses. "
+                f"ICU requires {required_icu_nurses} nurses for {icu_patients} patients — "
+                f"ensure ventilator and equipment support for {icu_beds_needed} ICU positions."
+            ),
+            metadata={
+                "total_gap": gap,
+                "on_call_activated": on_call_available,
+                "agency_requested": agency_available,
+                "float_pool": float_pool_available,
+                "extended_shifts": extended_shift_nurses,
+                "still_short": still_short,
+                "icu_nurses_required": required_icu_nurses,
+                "requires_escalation": still_short > 0,
+                "icu_beds_to_equip": icu_beds_needed,
+                "replan_round": replan_round,
+                "replan_mode": replan_mode,
+                "gap_resolved": replan_mode and still_short == 0,
+            },
+        )
+
+        # Message → Compliance: ratio violation / or replan resolution
+        if effective_ratio < 0.7 or still_short > 0:
+            comp_msg_type = "replan_response" if replan_mode else "staffing_request"
+            await self.send_message(
+                receiver="compliance_agent",
+                message_type=comp_msg_type,
+                content=(
+                    f"{msg_prefix}Nurse:patient ratio at {effective_ratio:.0%}"
+                    f"{' — improved via alternative coverage' if replan_mode else ' — below safe threshold'}. "
+                    f"{still_short} positions {'still ' if replan_mode else ''}unresolvable without CMO authorization. "
+                    f"{'Updated regulatory exception documentation submitted.' if replan_mode else 'Regulatory exception documentation required.'}"
+                ),
+                metadata={
+                    "effective_ratio": effective_ratio,
+                    "still_short": still_short,
+                    "requires_cmo": still_short > 0,
+                    "ratio_exception_needed": effective_ratio < 0.7,
+                    "replan_round": replan_round,
+                    "replan_mode": replan_mode,
+                    "alternative_coverage_applied": replan_mode,
+                },
+            )
+        elif replan_mode:
+            # Replan resolved all issues — notify Compliance
+            await self.send_message(
+                receiver="compliance_agent",
+                message_type="replan_response",
+                content=(
+                    f"[REPLAN {replan_round}] REVISED PLAN: Staffing fully resolved. "
+                    f"Ratio improved to {effective_ratio:.0%} via float pool + extended shifts. "
+                    f"No CMO authorization required. All regulatory thresholds met."
+                ),
+                metadata={
+                    "effective_ratio": effective_ratio,
+                    "still_short": 0,
+                    "requires_cmo": False,
+                    "ratio_exception_needed": False,
+                    "replan_round": replan_round,
+                    "replan_mode": True,
+                    "gap_resolved": True,
+                    "alternative_coverage_applied": True,
+                },
             )
 
-        confidence_score = 0.88
-
+        summary_suffix = (
+            f" [REPLAN {replan_round}: float pool +{float_pool_available}, extended shifts +{extended_shift_nurses} applied]"
+            if replan_mode else ""
+        )
         return {
             "agent_name": self.agent_name,
             "summary": (
                 f"Staffing gap of {gap} nurses detected. "
-                f"{on_call_available} on-call + {agency_available} agency nurses available. "
+                f"{on_call_available} on-call + {agency_available} agency"
+                f"{f' + {float_pool_available} float pool + {extended_shift_nurses} extended shifts' if replan_mode else ''} nurses available. "
                 f"{'Escalation required for ' + str(still_short) + ' unresolved positions.' if still_short > 0 else 'Gap can be fully resolved.'}"
+                f"{summary_suffix}"
             ),
             "findings": findings,
             "recommendations": recommendations,
@@ -116,7 +255,13 @@ class StaffingAgent(AgentBase):
                 "gap": gap,
                 "on_call_available": on_call_available,
                 "agency_available": agency_available,
+                "float_pool_available": float_pool_available,
+                "extended_shift_nurses": extended_shift_nurses,
                 "still_short": still_short,
                 "requires_escalation": still_short > 0,
+                "replan_mode": replan_mode,
+                "replan_round": replan_round,
+                "alternative_coverage_applied": replan_mode,
+                "capacity_context_received": bool(capacity_msgs),
             }
         }

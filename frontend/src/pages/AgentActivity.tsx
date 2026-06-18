@@ -3,6 +3,7 @@ import { useStore, type AgentLiveState } from '../store/appStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { BandRoomPanel } from '../components/band/BandRoomPanel'
 import { CollaborationTimeline } from '../components/band/CollaborationTimeline'
+import { CollaborationDashboard } from '../components/agents/CollaborationDashboard'
 
 const AGENT_META: Record<string, { icon: string; className: string; fullName: string; role: string; color: string }> = {
   incident_commander: { icon: '🎯', className: 'commander', fullName: 'Incident Commander', role: 'Master Orchestrator', color: 'var(--agent-commander)' },
@@ -14,7 +15,7 @@ const AGENT_META: Record<string, { icon: string; className: string; fullName: st
 
 export function AgentActivity({ onNavigate }: { onNavigate: (page: string, id?: string) => void }) {
   const { selectedIncidentId, agentStates, feedEvents, incidents } = useStore()
-  const [activeTab, setActiveTab] = useState<'overview' | 'feed' | 'band'>('band')
+  const [activeTab, setActiveTab] = useState<'collab' | 'timeline' | 'overview' | 'feed'>('collab')
 
   useWebSocket(selectedIncidentId)
 
@@ -31,8 +32,8 @@ export function AgentActivity({ onNavigate }: { onNavigate: (page: string, id?: 
       <div className="page-header">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <h1 className="page-title">📡 Band Coordination Hub</h1>
-            <p className="page-subtitle">Real-time multi-agent collaboration via Band coordination room</p>
+            <h1 className="page-title">🤝 Collaborative Agent Hub</h1>
+            <p className="page-subtitle">3-round peer-to-peer agent coordination with live message bus and Band integration</p>
           </div>
           {selectedIncidentId && (
             <div style={{ display: 'flex', gap: 8 }}>
@@ -94,24 +95,27 @@ export function AgentActivity({ onNavigate }: { onNavigate: (page: string, id?: 
             </div>
           </div>
 
-          {/* TOP SECTION: Band Room + Collaboration Timeline side by side */}
-          <div className="grid-2" style={{ marginBottom: 'var(--spacing-lg)' }}>
-            <BandRoomPanel />
-            <CollaborationTimeline />
-          </div>
-
+          {/* Collaboration + Band always visible at top when no tab selected */}
           {/* Tabs */}
           <div style={{ display: 'flex', gap: 4, marginBottom: 'var(--spacing-lg)', background: 'rgba(255,255,255,0.03)', padding: 4, borderRadius: 'var(--radius-md)', width: 'fit-content' }}>
-            {(['band', 'overview', 'feed'] as const).map(tab => (
+            {(['collab', 'timeline', 'overview', 'feed'] as const).map(tab => (
               <button key={tab} className={`btn ${activeTab === tab ? 'btn-primary' : 'btn-ghost'} btn-sm`}
                 onClick={() => setActiveTab(tab)}>
-                {tab === 'band' ? '📡 Band Detail' : tab === 'overview' ? '🤖 Agent Status' : '📡 Live Feed'}
+                {tab === 'collab' ? '🤝 Collaboration' : tab === 'timeline' ? '📡 Timeline' : tab === 'overview' ? '🤖 Agent Status' : '📡 Live Feed'}
               </button>
             ))}
           </div>
 
-          {activeTab === 'band' ? (
+          {activeTab === 'collab' ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-lg)' }}>
+              <CollaborationDashboard />
+            </div>
+          ) : activeTab === 'timeline' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-lg)' }}>
+              <div className="grid-2">
+                <BandRoomPanel />
+                <CollaborationTimeline />
+              </div>
               <BandArchitectureCard />
             </div>
           ) : activeTab === 'overview' ? (
@@ -153,14 +157,14 @@ function BandArchitectureCard() {
   return (
     <div className="card" style={{ borderColor: 'rgba(0,163,255,0.2)', background: 'rgba(0,163,255,0.03)' }}>
       <div className="card-title" style={{ marginBottom: 16, color: '#00a3ff' }}>
-        📡 How Band Powers This Workflow
+        📡 How Band Enables Agent Collaboration
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
         {[
-          { icon: '🏠', title: 'Band Room', desc: 'Dedicated coordination space created per incident. All agents share context here — not through direct API calls.' },
-          { icon: '🔄', title: 'Context Bus', desc: 'Each agent publishes findings to the shared Band room. Commander synthesizes all outputs before generating a plan.' },
-          { icon: '⚡', title: 'Parallel Execution', desc: 'Capacity, Staffing, and Resource agents run simultaneously — not sequentially. Band eliminates bottlenecks.' },
-          { icon: '🛡️', title: 'Human Gate', desc: 'No action is taken without human approval. Band routes the final plan to the Operations Manager for sign-off.' },
+          { icon: '🏠', title: 'Band Room', desc: 'Dedicated coordination space per incident. Agents post structured reports and the Commander synthesizes them into a unified plan.' },
+          { icon: '⛓️', title: '3-Round Pipeline', desc: 'Round 1: Capacity → peers. Round 2: Staffing+Resource read Capacity data. Round 3: Compliance validates all outputs. Sequential by design.' },
+          { icon: '✉️', title: 'Typed Messages', desc: 'capacity_alert, staffing_gap, resource_shortage — every peer message is typed, logged to audit trail, and broadcast over WebSocket.' },
+          { icon: '🛡️', title: 'Human Gate', desc: 'No action executes without human approval. Band routes the final plan to the Operations Manager for mandatory sign-off before any intervention.' },
         ].map(item => (
           <div key={item.title} style={{
             padding: 14, borderRadius: 10,
@@ -240,22 +244,41 @@ function AgentCard({ agent }: { agent: AgentLiveState }) {
   )
 }
 
-function FeedEventRow({ event }: { event: { event_type: string; agent_name?: string; step?: string; content?: string; output_summary?: string; message?: string; timestamp?: string } }) {
-  const meta = event.agent_name ? AGENT_META[event.agent_name] : null
+function FeedEventRow({ event }: { event: { event_type: string; agent_name?: string; step?: string; content?: string; output_summary?: string; message?: string; timestamp?: string; sender?: string; receiver?: string; message_type?: string } }) {
+  const meta = event.agent_name ? AGENT_META[event.agent_name] : (event.sender ? AGENT_META[event.sender] : null)
   const time = event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString()
+  const isPeerMsg = event.event_type === 'agent:message'
 
   const content =
     event.content || event.output_summary || event.message ||
     (event.event_type === 'plan:ready' ? 'Final action plan generated' : event.event_type)
 
+  const senderMeta   = event.sender   ? AGENT_META[event.sender]   : null
+  const receiverMeta = event.receiver ? AGENT_META[event.receiver] : null
+
   return (
-    <div className="feed-event">
+    <div className="feed-event" style={isPeerMsg ? { borderLeft: '2px solid #f59e0b', background: 'rgba(245,158,11,0.04)' } : undefined}>
       <div className="feed-time">{time}</div>
-      {meta && (
+      {isPeerMsg && senderMeta && receiverMeta ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+          <div className="feed-agent-tag" style={{ background: `${senderMeta.color}20`, color: senderMeta.color }}>
+            {senderMeta.icon} {event.sender?.replace('_agent', '').replace('_', ' ').toUpperCase()}
+          </div>
+          <span style={{ color: '#f59e0b', fontWeight: 700, fontSize: '0.75rem' }}>⇨</span>
+          <div className="feed-agent-tag" style={{ background: `${receiverMeta.color}20`, color: receiverMeta.color }}>
+            {receiverMeta.icon} {event.receiver?.replace('_agent', '').replace('_', ' ').toUpperCase()}
+          </div>
+          {event.message_type && (
+            <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: '#f59e0b', background: 'rgba(245,158,11,0.12)', padding: '1px 5px', borderRadius: 3, border: '1px solid rgba(245,158,11,0.2)' }}>
+              {event.message_type.replace(/_/g, ' ').toUpperCase()}
+            </span>
+          )}
+        </div>
+      ) : meta ? (
         <div className="feed-agent-tag" style={{ background: `${meta.color}20`, color: meta.color }}>
           {meta.icon} {event.agent_name?.replace('_agent', '').replace('_', ' ').toUpperCase()}
         </div>
-      )}
+      ) : null}
       {event.step && (
         <div className="step-label">{event.step}</div>
       )}

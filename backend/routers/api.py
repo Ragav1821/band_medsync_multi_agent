@@ -142,6 +142,87 @@ async def get_audit_events(incident_id: Optional[str] = None):
     return store.get_all_audit_events()
 
 
+# ── Phase 18: Agent Message Bus ───────────────────────────────────────────
+
+@router.get("/incidents/{incident_id}/messages", response_model=List[dict])
+async def get_incident_messages(incident_id: str):
+    """
+    Return the full inter-agent message log for an incident.
+    Powers the Coordination Timeline and Collaboration Dashboard.
+    """
+    from shared.agent_messages import message_bus
+    return message_bus.get_conversation_dicts(incident_id)
+
+
+@router.get("/incidents/{incident_id}/coordination-stats", response_model=dict)
+async def get_coordination_stats(incident_id: str):
+    """
+    Return collaboration statistics for an incident:
+    message counts, active agents, message type breakdown.
+    """
+    from shared.agent_messages import message_bus
+    msgs = message_bus.get_conversation(incident_id)
+    
+    by_sender: dict = {}
+    by_type: dict = {}
+    agent_pairs: list = []
+    
+    for m in msgs:
+        by_sender[m.sender] = by_sender.get(m.sender, 0) + 1
+        by_type[m.message_type] = by_type.get(m.message_type, 0) + 1
+        agent_pairs.append({"from": m.sender, "to": m.receiver, "type": m.message_type})
+    
+    return {
+        "incident_id": incident_id,
+        "total_messages": len(msgs),
+        "messages_by_sender": by_sender,
+        "messages_by_type": by_type,
+        "agent_pairs": agent_pairs,
+        "collaboration_active": len(msgs) > 0,
+    }
+
+
+@router.get("/incidents/{incident_id}/coordination", response_model=dict)
+async def get_coordination_round(incident_id: str):
+    """
+    Phase 19: Return current coordination round state for an incident.
+    Includes negotiation status, revision count, and round history.
+    """
+    from services.data_store import store
+    round_data = store.get_coordination_round(incident_id)
+    if not round_data:
+        # Return a default (incident may not have started yet)
+        return {
+            "incident_id": incident_id,
+            "current_round": 1,
+            "max_rounds": 3,
+            "revision_count": 0,
+            "replan_count": 0,
+            "status": "initial",
+            "final_approval_round": None,
+            "negotiation_log": [],
+        }
+    return round_data
+
+
+@router.get("/incidents/{incident_id}/revisions", response_model=list)
+async def get_revision_history(incident_id: str):
+    """
+    Phase 19: Return all replanning cycles for an incident.
+    Filters the negotiation_log to show only revision events.
+    """
+    from services.data_store import store
+    round_data = store.get_coordination_round(incident_id)
+    if not round_data:
+        return []
+    log = round_data.get("negotiation_log", [])
+    revision_events = [e for e in log if e.get("event") in (
+        "REVISION_REQUESTED", "REPLAN_REQUEST_ISSUED",
+        "AGENTS_REVISED", "COMPLIANCE_RECHECKED",
+        "APPROVED", "FORCE_FINALIZED",
+    )]
+    return revision_events
+
 # ── Simulation ────────────────────────────────────────────────────────────
 
 @router.get("/simulation/scenarios", response_model=List[dict])
@@ -270,6 +351,11 @@ async def run_agent_workflow(incident_id: str, incident_data: dict):
 
             # ── 3. Save action plan (includes executive_summary) ──────────
             store.save_action_plan(incident_id, output)
+
+            # ── 3b. Phase 19: persist coordination round ──────────────────
+            coord_round_data = action_plan_data.get("coordination_round")
+            if coord_round_data:
+                store.save_coordination_round(incident_id, coord_round_data)
 
             # ── 4. Update incident status ─────────────────────────────────
             store.update_incident_status(incident_id, IncidentStatus.PLAN_READY)

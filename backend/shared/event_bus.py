@@ -112,3 +112,76 @@ async def emit_band_room_created(incident_id: str, band_chat_id: str):
         "band_chat_id": band_chat_id,
         "band_chat_url": f"https://app.band.ai/chats/{band_chat_id}",
     })
+
+
+async def emit_agent_message(incident_id: str, sender: str, receiver: str,
+                              message_type: str, content: str, metadata: Dict = None):
+    """
+    Phase 18: Broadcast a structured inter-agent message to all WebSocket clients.
+    This is the core event that powers the Coordination Timeline UI.
+    """
+    await ws_manager.broadcast_to_incident(incident_id, {
+        "event_type": "agent:message",
+        "incident_id": incident_id,
+        "sender": sender,
+        "receiver": receiver,
+        "message_type": message_type,
+        "content": content,
+        "metadata": metadata or {},
+    })
+
+
+# ── Phase 19A: Negotiation Loop Events ────────────────────────────────────────
+
+async def emit_negotiation_revision_requested(
+    incident_id: str, issues: List[str], round_num: int
+):
+    """Compliance issued a REVISION_REQUEST — plan needs revision."""
+    await ws_manager.broadcast_to_incident(incident_id, {
+        "event_type": "negotiation:revision_requested",
+        "incident_id": incident_id,
+        "issues": issues[:5],
+        "round": round_num,
+        "message": f"Compliance requested revision: {'; '.join(issues[:2])}",
+    })
+
+
+async def emit_negotiation_replanning_started(
+    incident_id: str, replan_num: int, max_rounds: int = 3
+):
+    """Commander started a replan cycle — agents are revising."""
+    await ws_manager.broadcast_to_incident(incident_id, {
+        "event_type": "negotiation:replanning_started",
+        "incident_id": incident_id,
+        "replan_number": replan_num,
+        "max_rounds": max_rounds,
+        "message": f"Replan cycle {replan_num}/{max_rounds} initiated by Commander.",
+    })
+
+
+async def emit_negotiation_reapproved(
+    incident_id: str, round_num: int, status: str = "approved"
+):
+    """Compliance re-evaluated and approved the revised plan."""
+    await ws_manager.broadcast_to_incident(incident_id, {
+        "event_type": "negotiation:reapproved",
+        "incident_id": incident_id,
+        "round": round_num,
+        "status": status,
+        "message": f"Compliance approved revised plan on round {round_num}.",
+    })
+
+
+async def emit_negotiation_completed(
+    incident_id: str, final_status: str, rounds_used: int, replan_count: int
+):
+    """Negotiation loop finished — final verdict delivered."""
+    await ws_manager.broadcast_to_incident(incident_id, {
+        "event_type": "negotiation:completed",
+        "incident_id": incident_id,
+        "final_status": final_status,
+        "rounds_used": rounds_used,
+        "replan_count": replan_count,
+        "message": f"Negotiation complete: {final_status.upper()} after {replan_count} replan cycle(s).",
+    })
+

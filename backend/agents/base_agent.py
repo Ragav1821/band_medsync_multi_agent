@@ -9,7 +9,8 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 from shared.context_store import context_store
-from shared.event_bus import emit_agent_started, emit_agent_thinking, emit_agent_completed
+from shared.event_bus import emit_agent_started, emit_agent_thinking, emit_agent_completed, emit_agent_message
+from shared.agent_messages import AgentMessage, message_bus
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,54 @@ class AgentBase(ABC):
         self._add_reasoning_step(step, content)
         await emit_agent_thinking(self.incident_id, self.agent_name, step, content)
         await asyncio.sleep(0.3)  # Simulate processing time for demo
+
+    # ------------------------------------------------------------------
+    # Phase 18 — Inter-Agent Messaging
+    # ------------------------------------------------------------------
+    async def send_message(
+        self,
+        receiver: str,
+        message_type: str,
+        content: str,
+        metadata: dict = None,
+    ) -> AgentMessage:
+        """
+        Publish a typed message to another agent.
+
+        Automatically:
+        1. Records the message in the shared MessageBus.
+        2. Broadcasts it as an 'agent:message' WebSocket event.
+        3. Appends to the agent's own reasoning trace for auditability.
+
+        The audit trail write happens in incident_commander after the full
+        coordination loop completes.
+        """
+        msg = AgentMessage(
+            incident_id=self.incident_id,
+            sender=self.agent_name,
+            receiver=receiver,
+            message_type=message_type,
+            content=content,
+            metadata=metadata or {},
+        )
+        message_bus.send_message(msg)
+
+        # Broadcast over WebSocket so the frontend timeline updates live
+        await emit_agent_message(
+            self.incident_id,
+            sender=self.agent_name,
+            receiver=receiver,
+            message_type=message_type,
+            content=content,
+            metadata=metadata or {},
+        )
+
+        # Log in reasoning trace
+        self._add_reasoning_step(
+            f"MSG → {receiver}",
+            f"[{message_type}] {content}",
+        )
+        return msg
 
     # ------------------------------------------------------------------
     # LLM Bridge
@@ -126,19 +175,30 @@ class AgentBase(ABC):
     # ------------------------------------------------------------------
     # Run lifecycle
     # ------------------------------------------------------------------
-    async def run(self, incident_data: Dict) -> Dict:
+    async def run(self, incident_data: Dict, inbox: list = None) -> Dict:
         """
         Main entry point. Wraps the agent's analyze() method with
         standard logging, timing, context storage, and error handling.
+
+        Phase 18: accepts optional inbox (list of AgentMessage) so agents
+        can read messages sent to them by earlier agents in the pipeline.
         """
         self.started_at = datetime.utcnow()
         self.status = "active"
+        inbox = inbox or []
 
         await emit_agent_started(self.incident_id, self.agent_name)
-        await self._emit_thinking("INIT", f"{self.agent_role} activated. Analyzing incident data...")
+
+        if inbox:
+            await self._emit_thinking(
+                "INBOX_READ",
+                f"Reading {len(inbox)} message(s) from peer agents before analysis..."
+            )
+        else:
+            await self._emit_thinking("INIT", f"{self.agent_role} activated. Analyzing incident data...")
 
         try:
-            result = await self.analyze(incident_data)
+            result = await self.analyze(incident_data, inbox=inbox)
             self.output = result
             self.status = "completed"
             self.completed_at = datetime.utcnow()
@@ -178,7 +238,7 @@ class AgentBase(ABC):
             }
 
     @abstractmethod
-    async def analyze(self, incident_data: Dict) -> Dict:
+    async def analyze(self, incident_data: Dict, inbox: list = None) -> Dict:
         """
         Core analysis logic — implemented by each specialist agent.
         Must return a dict with at minimum:
@@ -187,5 +247,8 @@ class AgentBase(ABC):
           - recommendations: List[str]
           - flags: List[str]
           - confidence_score: float
+
+        Phase 18: inbox is an optional list of AgentMessage objects sent by
+        peer agents. Agents should inspect inbox to refine their analysis.
         """
         pass
