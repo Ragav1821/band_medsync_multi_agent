@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../../store/appStore'
+import type { AgentLiveState } from '../../store/appStore'
 
 // ── Agent roster ─────────────────────────────────────────────
 const AGENTS = [
@@ -274,7 +275,7 @@ function ParticipantList({
   currentAgents,
 }: {
   agents: typeof AGENTS;
-  currentAgents: ReturnType<typeof useStore>['agentStates'][string]
+  currentAgents: AgentLiveState[]
 }) {
   const isEmpty = agents.length === 0
 

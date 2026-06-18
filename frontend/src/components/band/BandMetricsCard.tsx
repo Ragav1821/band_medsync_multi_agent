@@ -9,6 +9,8 @@
  */
 
 import { useStore } from '../../store/appStore'
+import type { AgentLiveState, WSAgentEvent } from '../../store/appStore'
+import type { Incident } from '../../api/client'
 
 interface BandMetricsCardProps {
   onNavigate?: (page: string) => void
@@ -17,27 +19,27 @@ interface BandMetricsCardProps {
 // ── Derived metric helpers ────────────────────────────────────────────────
 
 /** Count how many distinct Band rooms have been activated (one per incident that has run agents) */
-function countBandRooms(agentStates: ReturnType<typeof useStore>['agentStates']): number {
+function countBandRooms(agentStates: Record<string, AgentLiveState[]>): number {
   return Object.values(agentStates).filter(
-    agents => agents.some(a => a.status !== 'idle')
+    (agents) => agents.some((a) => a.status !== 'idle')
   ).length
 }
 
 /** Count how many agents across ALL rooms are currently active/thinking/completed */
-function countActiveAgents(agentStates: ReturnType<typeof useStore>['agentStates']): number {
+function countActiveAgents(agentStates: Record<string, AgentLiveState[]>): number {
   return Object.values(agentStates).flat().filter(
-    a => a.status === 'active' || a.status === 'thinking' || a.status === 'completed'
+    (a) => a.status === 'active' || a.status === 'thinking' || a.status === 'completed'
   ).length
 }
 
 /** Count total agent:* events as a proxy for "messages routed through Band" */
-function countMessagesRouted(feedEvents: ReturnType<typeof useStore>['feedEvents']): number {
-  return feedEvents.filter(e => e.event_type?.startsWith('agent:')).length
+function countMessagesRouted(feedEvents: WSAgentEvent[]): number {
+  return feedEvents.filter((e) => e.event_type?.startsWith('agent:')).length
 }
 
 /** Count incidents that are not resolved */
-function countActiveIncidents(incidents: ReturnType<typeof useStore>['incidents']): number {
-  return incidents.filter(i => i.status !== 'resolved').length
+function countActiveIncidents(incidents: Incident[]): number {
+  return incidents.filter((i) => i.status !== 'resolved').length
 }
 
 // ── Stat cell ─────────────────────────────────────────────────────────────
