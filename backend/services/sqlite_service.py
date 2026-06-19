@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_incident ON agent_runs(incident_id);
+
+CREATE TABLE IF NOT EXISTS video_jobs (
+    id          TEXT PRIMARY KEY,
+    incident_id TEXT NOT NULL,
+    data        TEXT NOT NULL,          -- JSON blob
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_video_incident ON video_jobs(incident_id);
+CREATE INDEX IF NOT EXISTS idx_video_status   ON video_jobs(status);
 """
 
 
@@ -234,6 +244,34 @@ class SQLiteStorageService:
     def load_agent_runs_for_incident(self, incident_id: str) -> List[Dict]:
         rows = self._exec(
             "SELECT data FROM agent_runs WHERE incident_id=? ORDER BY created_at ASC",
+            (incident_id,),
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    # ── Video Jobs ──────────────────────────────────────────────────────────────
+
+    def save_video_job(self, job: Dict) -> None:
+        """Upsert a video generation job."""
+        self._exec(
+            "INSERT OR REPLACE INTO video_jobs (id, incident_id, data, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                job["id"],
+                job["incident_id"],
+                json.dumps(job),
+                job.get("status", "pending"),
+                job.get("created_at", self._now()),
+            ),
+        )
+
+    def load_video_job(self, job_id: str) -> Optional[Dict]:
+        row = self._exec(
+            "SELECT data FROM video_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def load_video_jobs_for_incident(self, incident_id: str) -> List[Dict]:
+        rows = self._exec(
+            "SELECT data FROM video_jobs WHERE incident_id=? ORDER BY created_at DESC",
             (incident_id,),
         ).fetchall()
         return [json.loads(r[0]) for r in rows]

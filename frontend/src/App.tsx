@@ -7,6 +7,7 @@ import { AgentActivity } from './pages/AgentActivity'
 import { ActionPlanPage } from './pages/ActionPlan'
 import { Simulation } from './pages/Simulation'
 import { AuditTrail } from './pages/AuditTrail'
+import { VideoGenerator } from './pages/VideoGenerator'
 import { useStore } from './store/appStore'
 
 function ToastContainer() {
@@ -24,7 +25,7 @@ function ToastContainer() {
   )
 }
 
-type Page = 'dashboard' | 'incidents' | 'agents' | 'action-plan' | 'simulation' | 'audit'
+type Page = 'dashboard' | 'incidents' | 'agents' | 'action-plan' | 'simulation' | 'audit' | 'video'
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
@@ -48,6 +49,7 @@ function App() {
       case 'action-plan': return <ActionPlanPage onNavigate={handleNavigate} />
       case 'simulation': return <Simulation onNavigate={handleNavigate} />
       case 'audit': return <AuditTrail />
+      case 'video': return <VideoGenerator onNavigate={handleNavigate} />
       default: return <Dashboard onNavigate={handleNavigate} />
     }
   }

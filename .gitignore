@@ -91,3 +91,10 @@ pnpm-debug.log*
 *.pfx
 secrets/
 credentials/
+
+# ── Phase 20: Generated Media ─────────────────────────────────
+backend/media/videos/*.mp4
+backend/media/audio/*.mp3
+backend/media/frames/
+backend/media/demo/*.mp4
+backend/media/demo/

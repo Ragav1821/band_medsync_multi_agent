@@ -185,3 +185,48 @@ class BandNotificationRequest(BaseModel):
     plan_id: str = Field("", max_length=64)
     message: str = Field(..., min_length=1, max_length=1000)
     approved_by: str = Field("system", max_length=100)
+
+
+# ── Phase 20: Video Generator Schemas ────────────────────────────────────────
+
+class VideoJobStatus(str, Enum):
+    PENDING    = "pending"
+    STORY      = "story"
+    SCRIPT     = "script"
+    STORYBOARD = "storyboard"
+    AUDIO      = "audio"
+    VISUALS    = "visuals"
+    COMPOSING  = "composing"
+    COMPLETED  = "completed"
+    FAILED     = "failed"
+
+
+class VideoGenerateRequest(BaseModel):
+    """Request body for POST /incidents/{id}/generate-video."""
+    incident_id: str = Field(..., max_length=64)
+    voice_provider: str = Field(
+        "edge_tts",
+        description="edge_tts (default, neural) | gtts (free fallback) | elevenlabs (premium)",
+    )
+    resolution: str = Field("1280x720", description="Video resolution")
+    target_duration_sec: int = Field(120, ge=60, le=300, description="Target duration in seconds")
+
+
+class VideoJobSchema(BaseModel):
+    """Full video generation job record."""
+    id: str
+    incident_id: str
+    status: VideoJobStatus
+    progress_pct: int = 0
+    story_json: Optional[Dict] = None
+    script_json: Optional[Dict] = None
+    storyboard_json: Optional[Dict] = None
+    output_path: Optional[str] = None
+    audio_path: Optional[str] = None
+    duration_sec: Optional[float] = None
+    error_message: Optional[str] = None
+    created_at: str
+    completed_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True

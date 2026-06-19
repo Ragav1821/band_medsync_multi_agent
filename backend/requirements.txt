@@ -18,3 +18,13 @@ httpx>=0.27.0
 
 # JWT authentication (P0-2)
 PyJWT>=2.8.0
+
+# Phase 20: Video Generator pipeline
+moviepy>=1.0.3
+gTTS>=2.5.0
+Pillow>=10.0.0
+matplotlib>=3.8.0
+
+# Phase 20.5: Neural voice upgrade (free, no API key)
+# Provides en-US-AriaNeural, en-US-GuyNeural, en-US-JennyNeural etc.
+edge-tts>=6.1.9

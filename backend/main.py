@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers.api import router
 from routers.auth_router import auth_router
+from routers.video_router import video_router
 
 app = FastAPI(
     title="MedSync AI",
@@ -32,6 +33,7 @@ app.add_middleware(
 # Mount all routers under /api/v1
 app.include_router(router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(video_router, prefix="/api/v1")  # Phase 20: Video Generator
 
 
 @app.get("/")

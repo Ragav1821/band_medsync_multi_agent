@@ -41,16 +41,37 @@ export interface AgentMessage {
   timestamp?: string
 }
 
-// Phase 19 — Coordination Round tracking
+// Phase 19/20 — Coordination Round tracking
+export interface ChallengeEvent {
+  round: number
+  challenger: string
+  challenged: string
+  issue: string
+  timestamp: string
+}
+
+export interface AgreementEvent {
+  round: number
+  agent: string
+  resolution: string
+  timestamp: string
+}
+
 export interface CoordinationRound {
   incident_id: string
   current_round: number
   max_rounds: number
   revision_count: number
   replan_count: number
+  negotiation_cycles: number                   // Phase 20: total challenge-response cycles
   status: 'initial' | 'replanning' | 'approved' | 'rejected' | 'force_finalized'
   final_approval_round: number | null
   negotiation_log: Array<{ round: number; event: string; detail: string; timestamp: string }>
+  // Phase 20: bidirectional negotiation state
+  open_issues: string[]
+  resolved_issues: string[]
+  challenge_events: ChallengeEvent[]
+  agreement_events: AgreementEvent[]
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────
@@ -265,6 +286,24 @@ export const useStore = create<AppStore>((set, get) => ({
           title: '♻️ Replanning',
           message: 'Commander initiated replan — agents revising plans.',
         })
+      } else if (event.message_type === 'compliance_policy_objection') {
+        // Phase 20 Loop C challenge
+        get().addToast({
+          type: 'warning',
+          title: '⚖️ Compliance Challenge',
+          message: 'Compliance challenged Resource transfer plan (EMTALA §1395dd).',
+        })
+      } else if (event.message_type === 'alternative_plan') {
+        // Phase 20 Loop C resolution
+        get().addToast({
+          type: 'success',
+          title: '✅ Alternative Plan Submitted',
+          message: 'Resource proposed Hospital B MOU borrowing to resolve EMTALA objection.',
+        })
+      } else if (event.message_type === 'staffing_feasibility_response') {
+        // Phase 20 Loop A response — no toast, but logged
+      } else if (event.message_type === 'resource_constraint') {
+        // Phase 20 Loop B constraint — no toast, but logged
       }
       return
     }

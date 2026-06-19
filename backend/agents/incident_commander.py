@@ -153,6 +153,40 @@ class IncidentCommanderAgent(AgentBase):
         res_out = resource_result.get("output", {})
         coord_round.log_event("ROUND_2_COMPLETE", "Staffing + Resource analysis done")
 
+        # ── Phase 20: ROUND 2.5 — Capacity reads Staffing feasibility response ───────────
+        # Staffing always sends staffing_feasibility_response back to Capacity.
+        # Here Commander re-runs Capacity with that message in its inbox so Capacity
+        # can revise its ICU risk estimate and publish REVISED_CAPACITY_ESTIMATE.
+        await self._emit_thinking(
+            "ROUND_2_5",
+            "Coordination Round 2.5 (Phase 20): Capacity Agent reading Staffing feasibility "
+            "response to revise ICU risk estimate — bidirectional Loop A active."
+        )
+        capacity_inbox_r2 = message_bus.get_messages(
+            self.incident_id, receiver="capacity_agent"
+        )
+        if capacity_inbox_r2:
+            # Re-run Capacity with the feasibility feedback in its inbox
+            capacity_agent_r2 = CapacityAgent(self.incident_id)
+            capacity_result_r2 = await capacity_agent_r2.run(incident_data, inbox=capacity_inbox_r2)
+            cap_out_r2 = capacity_result_r2.get("output", {})
+            feasibility_msgs = [m for m in capacity_inbox_r2 if m.message_type == "staffing_feasibility_response"]
+            if feasibility_msgs:
+                fm = feasibility_msgs[-1]
+                revised_risk = fm.metadata.get("revised_icu_risk_pct")
+                if revised_risk:
+                    coord_round.log_agreement(
+                        "capacity_agent",
+                        f"Revised ICU risk estimate to {revised_risk:.1f}% based on Staffing feasibility response"
+                    )
+                coord_round.log_event(
+                    "ROUND_2_5_COMPLETE",
+                    f"Capacity revised ICU estimate after Staffing feasibility response"
+                )
+            cap_out = cap_out_r2
+        else:
+            coord_round.log_event("ROUND_2_5_SKIPPED", "No Staffing feasibility response in inbox")
+
         # ── ROUND 3: Compliance (reads all peer messages) ─────────────────────
         await self._emit_thinking(
             "ROUND_3",
@@ -164,7 +198,66 @@ class IncidentCommanderAgent(AgentBase):
         comp_out = compliance_result.get("output", {})
         coord_round.log_event("ROUND_3_COMPLETE", "Compliance initial review done")
 
+        # ── Phase 20: ROUND 3A — Resource ↔ Compliance policy objection loop ──
+        # If Compliance issued a COMPLIANCE_POLICY_OBJECTION to Resource,
+        # re-run Resource so it can submit ALTERNATIVE_PLAN, then re-run Compliance.
+        policy_objection_to_resource = next(
+            (m for m in message_bus.get_messages(self.incident_id, receiver="resource_agent")
+             if m.message_type == "compliance_policy_objection"),
+            None
+        )
+        if policy_objection_to_resource:
+            await self._emit_thinking(
+                "ROUND_3A",
+                "Phase 20 Round 3A: Compliance challenged Resource plan (EMTALA §1395dd). "
+                "Re-running Resource Agent to generate ALTERNATIVE_PLAN — bidirectional Loop C active."
+            )
+            coord_round.log_challenge(
+                "compliance_agent", "resource_agent",
+                "EMTALA §1395dd: transfer without receiving facility consent"
+            )
+            coord_round.negotiation_cycles += 1
+
+            # Re-run Resource with policy objection in inbox
+            resource_inbox_r3 = message_bus.get_messages(self.incident_id, receiver="resource_agent")
+            resource_agent_r3 = ResourceAgent(self.incident_id)
+            resource_result_r3 = await resource_agent_r3.run(incident_data, inbox=resource_inbox_r3)
+            res_out = resource_result_r3.get("output", {})
+            coord_round.log_event("ROUND_3A_RESOURCE_REVISED", "Resource submitted ALTERNATIVE_PLAN to Compliance")
+
+            # Check if Resource submitted an ALTERNATIVE_PLAN
+            alternative_plan_msg = next(
+                (m for m in message_bus.get_messages(self.incident_id, receiver="compliance_agent")
+                 if m.message_type == "alternative_plan"),
+                None
+            )
+            if alternative_plan_msg:
+                coord_round.log_agreement(
+                    "resource_agent",
+                    "Hospital B MOU borrowing proposed as EMTALA-compliant alternative to patient transfer"
+                )
+                await self._emit_thinking(
+                    "ROUND_3A_ALTERNATIVE",
+                    "✅ Resource ALTERNATIVE_PLAN received: Hospital B MOU borrowing replaces prohibited "
+                    "patient transfer. Re-running Compliance with revised plan."
+                )
+                # Re-run Compliance with ALTERNATIVE_PLAN in its inbox
+                compliance_inbox_r3 = message_bus.get_messages(self.incident_id, receiver="compliance_agent")
+                compliance_agent_r3 = ComplianceAgent(self.incident_id)
+                compliance_result = await compliance_agent_r3.run(incident_data, inbox=compliance_inbox_r3)
+                comp_out = compliance_result.get("output", {})
+                coord_round.log_event(
+                    "ROUND_3A_COMPLIANCE_REVISED",
+                    f"Compliance re-evaluated with ALTERNATIVE_PLAN: "
+                    f"{comp_out.get('data', {}).get('overall_status', 'UNKNOWN')}"
+                )
+                coord_round.log_agreement(
+                    "compliance_agent",
+                    "Accepted Resource ALTERNATIVE_PLAN — EMTALA objection resolved via Hospital B MOU"
+                )
+
         # ── Read Compliance Agent's decision message to Commander ─────────────
+
         commander_msgs = message_bus.get_messages(self.incident_id, receiver="incident_commander")
         compliance_decision = next(
             (m for m in reversed(commander_msgs)

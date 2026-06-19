@@ -40,9 +40,16 @@ class CoordinationRound:
     max_rounds: int = 3
     revision_count: int = 0
     replan_count: int = 0
+    negotiation_cycles: int = 0                              # Phase 20: total challenge-response cycles
     status: str = "initial"              # initial | replanning | approved | rejected | force_finalized
     final_approval_round: Optional[int] = None
     negotiation_log: List[Dict] = field(default_factory=list)
+
+    # Phase 20: Bidirectional negotiation state
+    open_issues: List[str] = field(default_factory=list)     # issues blocking final approval
+    resolved_issues: List[str] = field(default_factory=list) # issues confirmed resolved
+    challenge_events: List[Dict] = field(default_factory=list)  # agent challenge records
+    agreement_events: List[Dict] = field(default_factory=list)  # agent agreement records
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -54,6 +61,44 @@ class CoordinationRound:
             "detail": detail,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
+
+    # ── Phase 20: Challenge / Agreement helpers ────────────────────────────────
+
+    def log_challenge(self, challenger: str, challenged: str, issue: str):
+        """Record that challenger agent challenged another agent's plan."""
+        entry = {
+            "round": self.current_round,
+            "challenger": challenger,
+            "challenged": challenged,
+            "issue": issue,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        self.challenge_events.append(entry)
+        if issue not in self.open_issues:
+            self.open_issues.append(issue)
+        self.log_event(
+            "AGENT_CHALLENGE",
+            f"{challenger} challenged {challenged}: {issue[:80]}",
+        )
+
+    def log_agreement(self, agent: str, resolution: str):
+        """Record that an agent resolved a previously open issue."""
+        entry = {
+            "round": self.current_round,
+            "agent": agent,
+            "resolution": resolution,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        self.agreement_events.append(entry)
+        self.resolved_issues.append(resolution)
+        # Remove matching open issue if present
+        self.open_issues = [i for i in self.open_issues if i[:40] not in resolution[:40]]
+        self.log_event(
+            "AGENT_AGREEMENT",
+            f"{agent} resolved: {resolution[:80]}",
+        )
+
+
 
 
 # ── ReplanCoordinator ──────────────────────────────────────────────────────────

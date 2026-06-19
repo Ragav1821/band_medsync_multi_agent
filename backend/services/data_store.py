@@ -327,6 +327,65 @@ class IncidentStore:
             return 2
         return 1
 
+    # ── Video Jobs (Phase 20) ─────────────────────────────────────────────────
+
+    def save_video_job(self, job: Dict) -> Dict:
+        """Persist a new or updated video job. Mirrors to SQLite."""
+        if not hasattr(self, "_video_jobs"):
+            self._video_jobs: Dict[str, Dict] = {}
+        self._video_jobs[job["id"]] = job
+        db = self._sqlite()
+        if db:
+            try:
+                db.save_video_job(job)
+            except Exception:
+                pass
+        return job
+
+    def get_video_job(self, job_id: str) -> Optional[Dict]:
+        if not hasattr(self, "_video_jobs"):
+            self._video_jobs = {}
+        if job_id in self._video_jobs:
+            return self._video_jobs[job_id]
+        # Fallback to SQLite
+        db = self._sqlite()
+        if db:
+            try:
+                job = db.load_video_job(job_id)
+                if job:
+                    self._video_jobs[job_id] = job
+                    return job
+            except Exception:
+                pass
+        return None
+
+    def update_video_job_status(self, job_id: str, status: str, extra: Optional[Dict] = None) -> Optional[Dict]:
+        job = self.get_video_job(job_id)
+        if not job:
+            return None
+        job["status"] = status
+        if extra:
+            job.update(extra)
+        return self.save_video_job(job)
+
+    def list_video_jobs_for_incident(self, incident_id: str) -> List[Dict]:
+        if not hasattr(self, "_video_jobs"):
+            self._video_jobs = {}
+        local = [j for j in self._video_jobs.values() if j["incident_id"] == incident_id]
+        if local:
+            return sorted(local, key=lambda x: x["created_at"], reverse=True)
+        db = self._sqlite()
+        if db:
+            try:
+                jobs = db.load_video_jobs_for_incident(incident_id)
+                for j in jobs:
+                    self._video_jobs[j["id"]] = j
+                return jobs
+            except Exception:
+                pass
+        return []
+
 
 # Singleton
 store = IncidentStore()
+

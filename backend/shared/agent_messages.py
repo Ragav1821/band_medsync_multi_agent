@@ -40,21 +40,61 @@ class MessageType(str, Enum):
     ASSIGNMENT           = "assignment"
     ESCALATION           = "escalation"
     CLARIFICATION_REQUEST = "clarification_request"
+    APPROVAL_REQUEST     = "approval_request"   # Commander → Compliance: formal final-gate sign-off
 
     # Phase 19 — Negotiation Loop
     REVISION_REQUEST     = "revision_request"   # Compliance → Commander: reject + ask for replan
     REPLAN_REQUEST       = "replan_request"     # Commander → Resource/Staffing: try again
     REPLAN_RESPONSE      = "replan_response"    # Resource/Staffing → Compliance: revised plan
 
+    # Phase 20 — Bidirectional Feedback Loops
+    # Loop A: Capacity ↔ Staffing
+    STAFFING_FEASIBILITY_RESPONSE = "staffing_feasibility_response"  # Staffing → Capacity
+    REVISED_CAPACITY_ESTIMATE     = "revised_capacity_estimate"       # Capacity → Commander/Staffing
+
+    # Loop B: Staffing ↔ Resource
+    RESOURCE_CONSTRAINT           = "resource_constraint"             # Resource → Staffing
+
+    # Loop C: Resource ↔ Compliance
+    COMPLIANCE_POLICY_OBJECTION   = "compliance_policy_objection"     # Compliance → Resource
+    ALTERNATIVE_PLAN              = "alternative_plan"                # Resource → Compliance
+
 
 # ── Communication Contracts ─────────────────────────────────────────────────────
 # Defines which message types each agent is allowed to send.
 AGENT_CONTRACTS: Dict[str, List[str]] = {
-    "capacity_agent":    [MessageType.CAPACITY_ALERT, MessageType.OCCUPANCY_WARNING],
-    "staffing_agent":    [MessageType.STAFFING_GAP, MessageType.STAFFING_REQUEST, MessageType.REPLAN_RESPONSE],
-    "resource_agent":    [MessageType.RESOURCE_SHORTAGE, MessageType.EQUIPMENT_CONSTRAINT, MessageType.REPLAN_RESPONSE],
-    "compliance_agent":  [MessageType.APPROVAL, MessageType.REJECTION, MessageType.POLICY_WARNING, MessageType.REVISION_REQUEST],
-    "incident_commander": [MessageType.ASSIGNMENT, MessageType.ESCALATION, MessageType.CLARIFICATION_REQUEST, MessageType.REPLAN_REQUEST],
+    "capacity_agent": [
+        MessageType.CAPACITY_ALERT,
+        MessageType.OCCUPANCY_WARNING,
+        MessageType.REVISED_CAPACITY_ESTIMATE,          # Phase 20: feedback to Commander/Staffing
+    ],
+    "staffing_agent": [
+        MessageType.STAFFING_GAP,
+        MessageType.STAFFING_REQUEST,
+        MessageType.REPLAN_RESPONSE,
+        MessageType.STAFFING_FEASIBILITY_RESPONSE,      # Phase 20: feedback to Capacity
+    ],
+    "resource_agent": [
+        MessageType.RESOURCE_SHORTAGE,
+        MessageType.EQUIPMENT_CONSTRAINT,
+        MessageType.REPLAN_RESPONSE,
+        MessageType.RESOURCE_CONSTRAINT,                # Phase 20: feedback to Staffing
+        MessageType.ALTERNATIVE_PLAN,                   # Phase 20: objection response to Compliance
+    ],
+    "compliance_agent": [
+        MessageType.APPROVAL,
+        MessageType.REJECTION,
+        MessageType.POLICY_WARNING,
+        MessageType.REVISION_REQUEST,
+        MessageType.COMPLIANCE_POLICY_OBJECTION,        # Phase 20: challenge to Resource
+    ],
+    "incident_commander": [
+        MessageType.ASSIGNMENT,
+        MessageType.ESCALATION,
+        MessageType.CLARIFICATION_REQUEST,
+        MessageType.REPLAN_REQUEST,
+        MessageType.APPROVAL_REQUEST,                   # Phase 20: formal final-gate sign-off
+    ],
 }
 
 

@@ -1,13 +1,14 @@
 /**
- * CollaborationDashboard — Phase 18 (Task 9)
+ * CollaborationDashboard — Phase 18/19/20
  * Judge-facing panel showing:
  *   - Active Agents
  *   - Messages Exchanged
  *   - Coordination Events
  *   - Communication Graph (SVG arrows between agent nodes)
- *   - Agent Relationships
+ *   - Bidirectional Pairs (Phase 20)
+ *   - Challenge / Agreement Events (Phase 20)
  */
-import { useStore, type AgentMessage, type CoordinationRound } from '../../store/appStore'
+import { useStore, type AgentMessage, type CoordinationRound, type ChallengeEvent, type AgreementEvent } from '../../store/appStore'
 
 const AGENT_NODES = [
   { id: 'incident_commander', label: 'Commander', icon: '🎯', color: '#00a3ff', x: 200, y: 30 },
@@ -29,10 +30,17 @@ const MSG_TYPE_COLORS: Record<string, string> = {
   rejection:            '#ff3b5c',
   assignment:           '#00a3ff',
   escalation:           '#ff3b5c',
-  // Phase 19A: negotiation message types
+  // Phase 19 negotiation
   revision_request:     '#ff3b5c',
   replan_request:       '#00a3ff',
   replan_response:      '#a78bfa',
+  // Phase 20 bidirectional loops
+  staffing_feasibility_response: '#00e5a0',
+  revised_capacity_estimate:     '#00e5a0',
+  resource_constraint:           '#a78bfa',
+  compliance_policy_objection:   '#ff3b5c',
+  alternative_plan:              '#22c55e',
+  approval_request:              '#00a3ff',
 }
 
 function getNode(id: string) {
@@ -176,17 +184,25 @@ function NegotiationStatusPanel({ coordRound }: { coordRound: CoordinationRound 
   const log = coordRound?.negotiation_log ?? []
 
   const EVENT_ICONS: Record<string, { icon: string; color: string }> = {
-    ROUND_1_COMPLETE:    { icon: '1️⃣', color: '#00e5a0' },
-    ROUND_2_COMPLETE:    { icon: '2️⃣', color: '#f59e0b' },
-    ROUND_3_COMPLETE:    { icon: '3️⃣', color: '#a78bfa' },
-    NEGOTIATION_STARTED: { icon: '🔁', color: '#3b82f6' },
-    REVISION_REQUESTED:  { icon: '🔄', color: '#ff3b5c' },
-    REPLAN_REQUEST_ISSUED:{ icon: '📤', color: '#00a3ff' },
-    AGENTS_REVISED:      { icon: '📝', color: '#a78bfa' },
-    COMPLIANCE_RECHECKED:{ icon: '⚖️', color: '#fb923c' },
-    APPROVED:            { icon: '✅', color: '#22c55e' },
-    FORCE_FINALIZED:     { icon: '⚠️', color: '#94a3b8' },
-    POLICY_WARNING:      { icon: '⚠️', color: '#fb923c' },
+    ROUND_1_COMPLETE:          { icon: '1️⃣', color: '#00e5a0' },
+    ROUND_2_COMPLETE:          { icon: '2️⃣', color: '#f59e0b' },
+    ROUND_2_5_COMPLETE:        { icon: '⇄', color: '#00e5a0' },   // Phase 20: Loop A
+    ROUND_2_5_SKIPPED:         { icon: '⏭', color: '#64748b' },
+    ROUND_3_COMPLETE:          { icon: '3️⃣', color: '#a78bfa' },
+    ROUND_3A:                  { icon: '⚖️', color: '#ff3b5c' },   // Phase 20: Loop C start
+    ROUND_3A_RESOURCE_REVISED: { icon: '📝', color: '#a78bfa' },
+    ROUND_3A_ALTERNATIVE:      { icon: '💡', color: '#22c55e' },
+    ROUND_3A_COMPLIANCE_REVISED:{ icon: '✅', color: '#22c55e' },
+    NEGOTIATION_STARTED:       { icon: '🔁', color: '#3b82f6' },
+    REVISION_REQUESTED:        { icon: '🔄', color: '#ff3b5c' },
+    REPLAN_REQUEST_ISSUED:     { icon: '📤', color: '#00a3ff' },
+    AGENTS_REVISED:            { icon: '📝', color: '#a78bfa' },
+    COMPLIANCE_RECHECKED:      { icon: '⚖️', color: '#fb923c' },
+    APPROVED:                  { icon: '✅', color: '#22c55e' },
+    FORCE_FINALIZED:           { icon: '⚠️', color: '#94a3b8' },
+    POLICY_WARNING:            { icon: '⚠️', color: '#fb923c' },
+    AGENT_CHALLENGE:           { icon: '🔴', color: '#ff3b5c' },  // Phase 20
+    AGENT_AGREEMENT:           { icon: '🟢', color: '#22c55e' },  // Phase 20
   }
 
   return (
@@ -304,13 +320,22 @@ function NegotiationStatusPanel({ coordRound }: { coordRound: CoordinationRound 
 }
 
 const DEMO_MESSAGES: AgentMessage[] = [
-  { incident_id: 'demo', sender: 'incident_commander', receiver: 'capacity_agent',   message_type: 'assignment',        content: 'Analyze ICU/ED capacity', timestamp: '' },
-  { incident_id: 'demo', sender: 'capacity_agent',     receiver: 'staffing_agent',   message_type: 'capacity_alert',    content: 'ICU projected 104%', timestamp: '' },
-  { incident_id: 'demo', sender: 'capacity_agent',     receiver: 'resource_agent',   message_type: 'occupancy_warning', content: 'Equipment demand spike', timestamp: '' },
-  { incident_id: 'demo', sender: 'staffing_agent',     receiver: 'resource_agent',   message_type: 'staffing_gap',      content: '14-nurse gap, equip ICU', timestamp: '' },
-  { incident_id: 'demo', sender: 'staffing_agent',     receiver: 'compliance_agent', message_type: 'staffing_request',  content: 'Ratio exception needed', timestamp: '' },
-  { incident_id: 'demo', sender: 'resource_agent',     receiver: 'compliance_agent', message_type: 'resource_shortage', content: '3 ventilator deficit', timestamp: '' },
-  { incident_id: 'demo', sender: 'compliance_agent',   receiver: 'incident_commander', message_type: 'policy_warning',  content: 'Conditionally compliant', timestamp: '' },
+  // Phase 18: initial one-directional pipeline
+  { incident_id: 'demo', sender: 'incident_commander', receiver: 'capacity_agent',   message_type: 'assignment',                   content: 'Analyze ICU/ED capacity', timestamp: '' },
+  { incident_id: 'demo', sender: 'capacity_agent',     receiver: 'staffing_agent',   message_type: 'capacity_alert',               content: 'ICU projected 130% — need 12 nurses', timestamp: '' },
+  { incident_id: 'demo', sender: 'capacity_agent',     receiver: 'resource_agent',   message_type: 'occupancy_warning',            content: 'Equipment demand spike', timestamp: '' },
+  // Phase 20 Loop A: Staffing ↔ Capacity
+  { incident_id: 'demo', sender: 'staffing_agent',     receiver: 'capacity_agent',   message_type: 'staffing_feasibility_response', content: 'Can cover 10 of 12 nurses — ICU risk drops to 112%', timestamp: '' },
+  // Phase 20 Loop B: Resource ↔ Staffing
+  { incident_id: 'demo', sender: 'staffing_agent',     receiver: 'resource_agent',   message_type: 'staffing_gap',                 content: '14-nurse gap, equip ICU', timestamp: '' },
+  { incident_id: 'demo', sender: 'resource_agent',     receiver: 'staffing_agent',   message_type: 'resource_constraint',           content: 'ICU: 8 workstations max — cap deployment at 8 nurses', timestamp: '' },
+  // Phase 20 Loop C: Compliance ↔ Resource
+  { incident_id: 'demo', sender: 'staffing_agent',     receiver: 'compliance_agent', message_type: 'staffing_request',             content: 'Ratio exception needed', timestamp: '' },
+  { incident_id: 'demo', sender: 'resource_agent',     receiver: 'compliance_agent', message_type: 'resource_shortage',            content: '3 ventilator deficit', timestamp: '' },
+  { incident_id: 'demo', sender: 'compliance_agent',   receiver: 'resource_agent',   message_type: 'compliance_policy_objection',  content: 'Transfer plan violates EMTALA §1395dd', timestamp: '' },
+  { incident_id: 'demo', sender: 'resource_agent',     receiver: 'compliance_agent', message_type: 'alternative_plan',             content: 'Hospital B MOU borrowing — EMTALA resolved', timestamp: '' },
+  // Phase 19: Commander approval gate
+  { incident_id: 'demo', sender: 'compliance_agent',   receiver: 'incident_commander', message_type: 'approval',                  content: 'All actions approved — EMTALA satisfied', timestamp: '' },
 ]
 
 export function CollaborationDashboard() {
@@ -337,6 +362,21 @@ export function CollaborationDashboard() {
   // Unique communication pairs
   const pairs = [...new Set(displayMsgs.map(m => `${m.sender}→${m.receiver}`))]
 
+  // Phase 20: bidirectional pair analysis
+  const biPairs = [
+    { a: 'capacity_agent', b: 'staffing_agent', label: 'Capacity ⇄ Staffing', color: '#00e5a0' },
+    { a: 'staffing_agent', b: 'resource_agent', label: 'Staffing ⇄ Resource', color: '#f59e0b' },
+    { a: 'resource_agent', b: 'compliance_agent', label: 'Resource ⇄ Compliance', color: '#a78bfa' },
+    { a: 'compliance_agent', b: 'incident_commander', label: 'Compliance ⇄ Commander', color: '#fb923c' },
+  ].map(pair => ({
+    ...pair,
+    aToB: displayMsgs.filter(m => m.sender === pair.a && m.receiver === pair.b).length,
+    bToA: displayMsgs.filter(m => m.sender === pair.b && m.receiver === pair.a).length,
+  }))
+
+  const challengeEvents: ChallengeEvent[] = coordRound?.challenge_events ?? []
+  const agreementEvents: AgreementEvent[] = coordRound?.agreement_events ?? []
+
   return (
     <div className="card" style={{ borderColor: 'rgba(245,158,11,0.2)', background: 'rgba(245,158,11,0.02)' }}>
       <div className="card-header" style={{ marginBottom: 16 }}>
@@ -354,16 +394,131 @@ export function CollaborationDashboard() {
         </div>
       </div>
 
-      {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
-        <StatCard label="Active Agents" value={activeAgents} sub="coordinating" color="#00a3ff" />
-        <StatCard label="Messages Exchanged" value={displayMsgs.length} sub="inter-agent" color="#f59e0b" />
-        <StatCard label="Communication Pairs" value={pairs.length} sub="unique channels" color="#a78bfa" />
-        <StatCard label="Coordination Rounds" value={coordRound?.current_round ?? 1} sub={`max ${coordRound?.max_rounds ?? 3} rounds`} color="#00e5a0" />
+      {/* KPI row — Phase 20: adds Challenges + Agreements */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 16 }}>
+        <StatCard label="Active Agents"        value={activeAgents}       sub="coordinating"       color="#00a3ff" />
+        <StatCard label="Messages Exchanged"   value={displayMsgs.length} sub="inter-agent"        color="#f59e0b" />
+        <StatCard label="Comm. Pairs"          value={pairs.length}       sub="unique channels"    color="#a78bfa" />
+        <StatCard label="Coord. Rounds"        value={coordRound?.current_round ?? 1} sub={`max ${coordRound?.max_rounds ?? 3}`} color="#00e5a0" />
+        <StatCard label="Challenges"
+          value={challengeEvents.length + (isLive ? 0 : 1)}
+          sub="agent challenges" color="#ff3b5c" />
+        <StatCard label="Agreements"
+          value={agreementEvents.length + (isLive ? 0 : 2)}
+          sub="resolved issues" color="#22c55e" />
       </div>
 
       {/* Phase 19A: Negotiation Status Panel */}
       <NegotiationStatusPanel coordRound={coordRound} />
+
+      {/* Phase 20: Bidirectional Pair Cards */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: '0.7rem', color: 'rgba(160,200,240,0.5)', marginBottom: 10, fontWeight: 700, letterSpacing: 1 }}>
+          BIDIRECTIONAL AGENT CHANNELS (PHASE 20)
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+          {biPairs.map(p => (
+            <div key={p.label} style={{
+              padding: '10px 14px', borderRadius: 10,
+              background: `${p.color}08`,
+              border: `1px solid ${p.color}30`,
+              display: 'flex', alignItems: 'center', gap: 12,
+            }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '0.72rem', fontWeight: 700, color: p.color, marginBottom: 4 }}>{p.label}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {/* A→B */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: 'rgba(160,200,240,0.5)' }}>A→B</span>
+                    <span style={{
+                      fontSize: '0.75rem', fontWeight: 800,
+                      color: p.aToB > 0 ? p.color : 'rgba(160,200,240,0.2)',
+                      minWidth: 16, textAlign: 'center',
+                    }}>{p.aToB}</span>
+                  </div>
+                  {/* Bidirectional arrow */}
+                  <span style={{ fontSize: '1rem', color: p.aToB > 0 && p.bToA > 0 ? p.color : 'rgba(160,200,240,0.15)', fontWeight: 800 }}>
+                    {p.aToB > 0 && p.bToA > 0 ? '⇄' : p.aToB > 0 ? '→' : p.bToA > 0 ? '←' : '–'}
+                  </span>
+                  {/* B→A */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{
+                      fontSize: '0.75rem', fontWeight: 800,
+                      color: p.bToA > 0 ? p.color : 'rgba(160,200,240,0.2)',
+                      minWidth: 16, textAlign: 'center',
+                    }}>{p.bToA}</span>
+                    <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: 'rgba(160,200,240,0.5)' }}>B→A</span>
+                  </div>
+                </div>
+              </div>
+              <div style={{
+                width: 8, height: 8, borderRadius: '50%',
+                background: p.aToB > 0 && p.bToA > 0 ? p.color : 'rgba(160,200,240,0.15)',
+                boxShadow: p.aToB > 0 && p.bToA > 0 ? `0 0 8px ${p.color}` : 'none',
+              }} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Phase 20: Challenge / Agreement Feed */}
+      {(challengeEvents.length > 0 || agreementEvents.length > 0 || !isLive) && (
+        <div style={{
+          background: 'rgba(0,0,0,0.15)', borderRadius: 10,
+          border: '1px solid rgba(255,255,255,0.06)',
+          padding: '12px',
+          marginBottom: 16,
+        }}>
+          <div style={{ fontSize: '0.7rem', color: 'rgba(160,200,240,0.5)', marginBottom: 10, fontWeight: 700, letterSpacing: 1 }}>
+            CHALLENGE / AGREEMENT EVENTS (PHASE 20)
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {/* Render live events if available, else show demo entries */}
+            {challengeEvents.length > 0 || agreementEvents.length > 0 ? (
+              [...challengeEvents.map(e => ({ type: 'challenge' as const, ...e })),
+               ...agreementEvents.map(e => ({ type: 'agreement' as const, agent: e.agent, issue: e.resolution, timestamp: e.timestamp, challenger: '', challenged: '', round: e.round }))]
+              .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+              .map((entry, i) => (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '5px 10px', borderRadius: 6,
+                  background: entry.type === 'challenge' ? 'rgba(255,59,92,0.06)' : 'rgba(34,197,94,0.06)',
+                  borderLeft: `2px solid ${entry.type === 'challenge' ? '#ff3b5c' : '#22c55e'}60`,
+                }}>
+                  <span style={{ fontSize: '0.8rem' }}>{entry.type === 'challenge' ? '🔴' : '🟢'}</span>
+                  <span style={{ fontSize: '0.68rem', fontWeight: 700, color: entry.type === 'challenge' ? '#ff3b5c' : '#22c55e', minWidth: 70 }}>
+                    {entry.type === 'challenge' ? 'CHALLENGE' : 'AGREEMENT'}
+                  </span>
+                  <span style={{ fontSize: '0.68rem', color: 'rgba(180,220,255,0.7)', flex: 1 }}>
+                    {entry.type === 'challenge'
+                      ? `${entry.challenger} → ${(entry as any).challenged}: ${entry.issue?.slice(0, 60)}`
+                      : `${entry.agent}: ${entry.issue?.slice(0, 70)}`
+                    }
+                  </span>
+                </div>
+              ))
+            ) : (
+              // Demo mode entries
+              [
+                { type: 'challenge', icon: '🔴', label: 'CHALLENGE', color: '#ff3b5c', bg: 'rgba(255,59,92,0.06)', text: 'compliance_agent → resource_agent: EMTALA §1395dd — transfer without consent' },
+                { type: 'agreement', icon: '🟢', label: 'AGREEMENT', color: '#22c55e', bg: 'rgba(34,197,94,0.06)', text: 'resource_agent: Hospital B MOU borrowing proposed — EMTALA objection resolved' },
+                { type: 'agreement', icon: '🟢', label: 'AGREEMENT', color: '#22c55e', bg: 'rgba(34,197,94,0.06)', text: 'capacity_agent: Revised ICU risk estimate to 112% based on Staffing feasibility' },
+              ].map((entry, i) => (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '5px 10px', borderRadius: 6,
+                  background: entry.bg,
+                  borderLeft: `2px solid ${entry.color}60`,
+                }}>
+                  <span style={{ fontSize: '0.8rem' }}>{entry.icon}</span>
+                  <span style={{ fontSize: '0.68rem', fontWeight: 700, color: entry.color, minWidth: 70 }}>{entry.label}</span>
+                  <span style={{ fontSize: '0.68rem', color: 'rgba(180,220,255,0.6)', flex: 1 }}>{entry.text}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Graph + breakdown */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>

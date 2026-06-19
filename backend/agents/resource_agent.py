@@ -4,6 +4,8 @@ Phase 18: Reads occupancy_warning from Capacity and staffing_gap from Staffing.
          Sends resource_shortage to Compliance Agent.
 Phase 19: Handles REPLAN_REQUEST from Commander — proposes alternative sourcing
          strategies and sends REPLAN_RESPONSE back to Compliance.
+Phase 20: Loop B: Always sends RESOURCE_CONSTRAINT back to Staffing (workstation cap).
+         Loop C: Reads COMPLIANCE_POLICY_OBJECTION and sends ALTERNATIVE_PLAN to Compliance.
 """
 import asyncio
 from typing import Dict, List
@@ -31,16 +33,32 @@ class ResourceAgent(AgentBase):
         recommendations = []
         flags = []
 
-        # ── Phase 18: Consume peer messages ───────────────────────────────────
+        # ── Phase 18: Consume peer messages ─────────────────────────────────────
         inbox = inbox or []
 
         capacity_msgs = [m for m in inbox if m.message_type == "occupancy_warning"]
-        staffing_msgs = [m for m in inbox if m.message_type == "staffing_gap"]
+        staffing_msgs = [m for m in inbox if m.message_type == "staffing_gap"
+                         or m.message_type == "staffing_feasibility_response"]
 
         # ── Phase 19: Detect REPLAN_REQUEST from Commander ───────────────────
         replan_msgs  = [m for m in inbox if m.message_type == "replan_request"]
         replan_mode  = bool(replan_msgs)
         replan_round = replan_msgs[-1].metadata.get("replan_round", 0) if replan_msgs else 0
+
+        # ── Phase 20 Loop C: Detect COMPLIANCE_POLICY_OBJECTION ────────────────
+        # Compliance sends this to challenge a transfer plan violating EMTALA
+        policy_objection_msgs = [m for m in inbox if m.message_type == "compliance_policy_objection"]
+        policy_objection = policy_objection_msgs[-1] if policy_objection_msgs else None
+        if policy_objection:
+            await self._emit_thinking(
+                "POLICY_OBJECTION_RECEIVED",
+                f"⇦ Compliance challenged our plan: {policy_objection.content[:100]}. "
+                f"Generating alternative sourcing strategy that avoids EMTALA conflict."
+            )
+            findings.append(
+                f"Compliance policy objection received: {policy_objection.metadata.get('policy_ref', 'EMTALA §1395dd')} — "
+                f"revising to Hospital B MOU borrowing to avoid prohibited patient transfer."
+            )
 
         icu_beds_to_equip = 0
         incoming_boosted  = incoming
@@ -61,7 +79,7 @@ class ResourceAgent(AgentBase):
 
         if staffing_msgs:
             stf_meta = staffing_msgs[-1].metadata
-            icu_beds_to_equip = stf_meta.get("icu_beds_to_equip", 0)
+            icu_beds_to_equip = stf_meta.get("icu_beds_to_equip", stf_meta.get("nurses_coverable", 0))
             await self._emit_thinking(
                 "STAFFING_INPUT",
                 f"Staffing Agent: {icu_beds_to_equip} ICU positions need equipment support. "
@@ -162,7 +180,55 @@ class ResourceAgent(AgentBase):
 
         confidence_score = 0.87 if replan_mode else 0.85
 
-        # ── Phase 18/19: Send messages to peer agents ─────────────────────────
+        # ── Phase 18/19/20: Send messages to peer agents ──────────────────────
+
+        # Phase 20 Loop B: ALWAYS send RESOURCE_CONSTRAINT back to Staffing.
+        # This creates the bidirectional Staffing ↔ Resource channel regardless of replan state.
+        # ICU workstation cap: assume 1.2 workstations per ventilator available.
+        max_icu_nurses_supported = max(1, int(effective_ventilators * 1.2) + 4)
+        await self.send_message(
+            receiver="staffing_agent",
+            message_type="resource_constraint",
+            content=(
+                f"Physical ICU capacity constraint: {effective_ventilators} ventilators + monitoring stations "
+                f"support a maximum of {max_icu_nurses_supported} ICU nurses simultaneously. "
+                f"{'Ventilator shortage of ' + str(vent_gap) + ' units — coordinate with mutual aid.' if vent_gap > 0 else 'Equipment available for current nurse deployment.'}"
+            ),
+            metadata={
+                "max_icu_nurses": max_icu_nurses_supported,
+                "ventilators_available": effective_ventilators,
+                "ventilator_gap": vent_gap,
+                "equipment_ready": vent_gap == 0,
+                "replan_mode": replan_mode,
+            },
+        )
+
+        # Phase 20 Loop C: If Compliance issued a policy objection, respond with ALTERNATIVE_PLAN.
+        if policy_objection:
+            await self.send_message(
+                receiver="compliance_agent",
+                message_type="alternative_plan",
+                content=(
+                    f"Alternative sourcing plan (avoids EMTALA patient transfer conflict): "
+                    f"Hospital B MOU lending {min(vent_gap + 2, 7)} ventilators (MOU ref: HB-2024-EMRG, 20-min ETA). "
+                    f"Elective surgery deferrals free 4 additional units. "
+                    f"No patient transfer required — EMTALA §1395dd conflict resolved. "
+                    f"Net ventilator deficit after alternative sourcing: 0 units."
+                ),
+                metadata={
+                    "plan_type": "alternative_sourcing",
+                    "emtala_conflict_resolved": True,
+                    "hospital_b_units": min(vent_gap + 2, 7),
+                    "elective_deferrals": 4,
+                    "net_vent_gap": 0,
+                    "policy_ref": policy_objection.metadata.get("policy_ref", "EMTALA §1395dd"),
+                    "objection_resolved": True,
+                },
+            )
+            findings.append(
+                "Alternative plan submitted to Compliance: Hospital B MOU borrowing replaces prohibited transfer. "
+                "EMTALA objection resolved."
+            )
         if vent_gap > 0 or blood_gap > 10:
             shortage_summary_parts = []
             if vent_gap > 0:

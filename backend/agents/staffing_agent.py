@@ -4,6 +4,8 @@ Phase 18: Reads capacity_alert from Capacity Agent to refine ICU nurse calculati
          Sends staffing_gap to Resource Agent for equipment-nurse coordination.
 Phase 19: Handles REPLAN_REQUEST from Commander — proposes alternative shift coverage
          and sends REPLAN_RESPONSE back to Compliance.
+Phase 20: Loop A: Always sends STAFFING_FEASIBILITY_RESPONSE back to Capacity Agent.
+         Loop B: Reads RESOURCE_CONSTRAINT from Resource Agent and revises ICU deployment.
 """
 import asyncio
 from typing import Dict, List
@@ -60,6 +62,26 @@ class StaffingAgent(AgentBase):
         else:
             cap_nurse_ask = 0
 
+        # ── Phase 20 Loop B: Detect RESOURCE_CONSTRAINT from Resource Agent ──────
+        # Resource sends this after analyzing staffing_gap to cap deployment numbers
+        resource_constraint_msgs = [m for m in inbox if m.message_type == "resource_constraint"]
+        resource_constraint = None
+        max_icu_nurses_from_resource = None
+        if resource_constraint_msgs:
+            rc_meta = resource_constraint_msgs[-1].metadata
+            max_icu_nurses_from_resource = rc_meta.get("max_icu_nurses", None)
+            await self._emit_thinking(
+                "RESOURCE_CONSTRAINT_RECEIVED",
+                f"⇦ Resource Agent constrained ICU deployment: max {max_icu_nurses_from_resource} nurses "
+                f"(physical workstation limit). Revising ICU allocation strategy."
+            )
+            findings.append(
+                f"Resource Agent constraint: ICU physical capacity limits deployment to "
+                f"{max_icu_nurses_from_resource} nurses max — revising allocation."
+            )
+            resource_constraint = resource_constraint_msgs[-1]
+
+
         if replan_mode:
             await self._emit_thinking(
                 "REPLAN_MODE",
@@ -75,6 +97,7 @@ class StaffingAgent(AgentBase):
         # Step 1: Calculate required staffing
         await self._emit_thinking("STAFFING_CALC", "Calculating required nurse staffing for surge scenario...")
 
+
         icu_patients    = int(total_icu_beds * icu_pct / 100)
         ed_patients_est = int(incoming * 0.8)
 
@@ -84,6 +107,17 @@ class StaffingAgent(AgentBase):
 
         # Boost ICU nurses if Capacity Agent requested more
         required_icu_nurses = max(required_icu_nurses, required_icu_nurses + cap_nurse_ask)
+
+        # Phase 20 Loop B: Cap ICU nurses if Resource reported workstation limit
+        if max_icu_nurses_from_resource is not None and required_icu_nurses > max_icu_nurses_from_resource:
+            overflow_icu = required_icu_nurses - max_icu_nurses_from_resource
+            required_icu_nurses = max_icu_nurses_from_resource
+            findings.append(
+                f"ICU nurse deployment capped at {required_icu_nurses} (Resource workstation limit). "
+                f"{overflow_icu} nurses redirected to overflow ward."
+            )
+            recommendations.insert(0, f"Redirect {overflow_icu} nurses from ICU to overflow wards (Resource capacity constraint)")
+
         total_required = required_icu_nurses + required_ed_nurses + required_general_nurses
 
         findings.append(f"Current available nurses: {available_nurses}")
@@ -156,7 +190,45 @@ class StaffingAgent(AgentBase):
 
         confidence_score = 0.90 if replan_mode else 0.88
 
-        # ── Phase 18/19: Send messages to peer agents ─────────────────────────
+        # ── Phase 18/19/20: Send messages to peer agents ──────────────────────
+        # Phase 20 Loop A: ALWAYS send STAFFING_FEASIBILITY_RESPONSE back to Capacity
+        # This creates the bidirectional Capacity ↔ Staffing channel regardless of replan state.
+        nurses_coverable = on_call_available + agency_available + float_pool_available + extended_shift_nurses + available_nurses
+        nurses_coverable = min(nurses_coverable, total_required)
+        icu_risk_delta_pct = None
+        if capacity_context:
+            projected_icu = capacity_context.get("projected_icu_pct", 0)
+            cap_ask = capacity_context.get("icu_nurses_needed", 0)
+            nurses_fulfilled = min(cap_ask, on_call_available + agency_available)
+            # Every additional ICU nurse reduces projected ICU % by ~1.5pp (heuristic)
+            icu_risk_delta_pct = round(nurses_fulfilled * 1.5, 1)
+            revised_icu_risk = max(85.0, projected_icu - icu_risk_delta_pct)
+        else:
+            revised_icu_risk = None
+            icu_risk_delta_pct = 0
+
+        await self.send_message(
+            receiver="capacity_agent",
+            message_type="staffing_feasibility_response",
+            content=(
+                f"Staffing feasibility: can deploy {nurses_coverable} of {total_required} required nurses. "
+                f"{on_call_available} on-call + {agency_available} agency activated. "
+                f"{f'ICU risk reduction: -{icu_risk_delta_pct}pp (projected → {revised_icu_risk:.1f}%).' if revised_icu_risk else ''} "
+                f"{'Gap of ' + str(still_short) + ' nurses unresolvable without CMO auth.' if still_short > 0 else 'Full staffing gap resolved.'}"
+            ),
+            metadata={
+                "nurses_coverable": nurses_coverable,
+                "total_required": total_required,
+                "still_short": still_short,
+                "on_call_activated": on_call_available,
+                "agency_requested": agency_available,
+                "icu_risk_delta_pct": icu_risk_delta_pct,
+                "revised_icu_risk_pct": revised_icu_risk,
+                "gap_fully_resolved": still_short == 0,
+                "resource_constraint_applied": resource_constraint is not None,
+            },
+        )
+
         # Message → Resource: ICU beds need equipment support
         icu_beds_needed = required_icu_nurses
         msg_type = "replan_response" if replan_mode else "staffing_gap"

@@ -5,6 +5,8 @@ Phase 18: Reads resource_shortage and staffing_request from peer agents.
 Phase 19: Issues REVISION_REQUEST to Commander when plan can be improved
          (instead of hard rejection). On re-evaluation (replan round > 0),
          applies lenient thresholds to break deadlocks.
+Phase 20: Loop C: Issues COMPLIANCE_POLICY_OBJECTION to Resource when transfer plan
+         detected. Reads ALTERNATIVE_PLAN from Resource and adjusts compliance verdict.
 """
 import asyncio
 from typing import Dict, List
@@ -50,6 +52,21 @@ class ComplianceAgent(AgentBase):
                           and m.sender == "resource_agent"]
         staffing_msgs  = [m for m in inbox if m.message_type in ("staffing_request", "replan_response")
                           and m.sender == "staffing_agent"]
+
+        # Phase 20 Loop C: Check if Resource responded with an ALTERNATIVE_PLAN
+        alternative_plan_msgs = [m for m in inbox if m.message_type == "alternative_plan"
+                                  and m.sender == "resource_agent"]
+        alternative_plan = alternative_plan_msgs[-1] if alternative_plan_msgs else None
+        emtala_objection_resolved = (
+            alternative_plan is not None and
+            alternative_plan.metadata.get("emtala_conflict_resolved", False)
+        )
+        if alternative_plan:
+            await self._emit_thinking(
+                "ALTERNATIVE_PLAN_RECEIVED",
+                f"⇦ Resource proposed alternative plan: {alternative_plan.content[:100]}. "
+                f"Evaluating EMTALA compliance of revised sourcing strategy."
+            )
 
         # Also read context store (pre-Phase-18 mechanism, kept for compatibility)
         capacity_output = await context_store.get_agent_output(self.incident_id, "capacity_agent")
@@ -214,10 +231,51 @@ class ComplianceAgent(AgentBase):
         # Step 4: Transfer validation
         await self._emit_thinking("TRANSFER_CHECK", "Validating patient transfer compliance...")
 
+        transfer_rec_detected = False
         if capacity_output and "Transfer" in str(capacity_output.get("recommendations", [])):
-            approved_actions.append("✅ Patient transfers: APPROVED — with mandatory transfer summary documentation")
-            required_docs.append("Transfer Summary Form (per Joint Commission TX.01.01.01)")
-            required_docs.append("Accepting Physician Acknowledgment (required per EMTALA)")
+            transfer_rec_detected = True
+            if emtala_objection_resolved:
+                # Resource submitted an alternative plan — log as agreement, approve
+                approved_actions.append(
+                    "✅ Patient transfers: REVISED — Hospital B MOU borrowing approved (EMTALA compliant). "
+                    "No patient transfer required."
+                )
+                required_docs.append("Mutual Aid Agreement Activation Log (Hospital B MOU)")
+                required_docs.append("Equipment Transfer Chain of Custody Form")
+            elif alternative_plan is None:
+                # First time seeing this — issue policy objection to Resource (Loop C challenge)
+                await self.send_message(
+                    receiver="resource_agent",
+                    message_type="compliance_policy_objection",
+                    content=(
+                        "EMTALA Policy Objection: Patient transfer recommendation detected without "
+                        "documented receiving-hospital consent. EMTALA §1395dd prohibits transfer "
+                        "without accepting facility confirmation. Requesting alternative sourcing "
+                        "strategy (e.g., mutual aid borrowing, vendor procurement) that avoids patient transfer."
+                    ),
+                    metadata={
+                        "policy_ref": "EMTALA §1395dd",
+                        "violation_type": "transfer_without_consent",
+                        "suggested_alternative": "Hospital B MOU borrowing or emergency vendor procurement",
+                        "requires_alternative_plan": True,
+                    },
+                )
+                compliance_issues.append(
+                    "Patient transfer plan requires EMTALA §1395dd compliance — receiving facility consent documentation pending"
+                )
+                approved_actions.append(
+                    "⚠️ Patient transfers: CHALLENGED — Awaiting Resource alternative plan (EMTALA objection issued)"
+                )
+                required_docs.append("Transfer Summary Form (per Joint Commission TX.01.01.01)")
+                required_docs.append("Accepting Physician Acknowledgment (required per EMTALA)")
+            else:
+                approved_actions.append(
+                    "✅ Patient transfers: APPROVED — with mandatory transfer summary documentation"
+                )
+                required_docs.append("Transfer Summary Form (per Joint Commission TX.01.01.01)")
+                required_docs.append("Accepting Physician Acknowledgment (required per EMTALA)")
+        elif not transfer_rec_detected:
+            pass  # no transfer recommended, nothing to validate
 
         # Step 5: Phase 19 — on replan rounds, reduce issue threshold for leniency
         # Replan round 2+: CONDITIONALLY_COMPLIANT is treated as acceptable (no REVISION_REQUEST)
